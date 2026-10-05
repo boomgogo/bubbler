@@ -1,0 +1,25 @@
+{
+  "name": "bubbler",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bubbler: an open-source 3D bubble shooter for the web",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test \"tools/test/*.test.js\"",
+    "tune": "node tools/tune.js",
+    "check:size": "node tools/check-size.js",
+    "perf": "node tools/perf.js",
+    "deploy": "node tools/predeploy.js && vite build && node tools/check-size.js && wrangler deploy"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0",
+    "vite": "^8.3.2",
+    "wrangler": "^4.147.0"
+  }
+}

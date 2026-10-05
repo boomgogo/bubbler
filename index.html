@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Bubbler</title>
+<meta name="description" content="Bubbler: an open-source 3D bubble shooter. Glass bubbles over a lantern-lit lake. No ads.">
+<meta name="theme-color" content="#060b1e">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%230a1230' stroke='%2316c8ff' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%2316c8ff'/%3E%3Ccircle cx='11' cy='10' r='2.2' fill='%23fff' opacity='.8'/%3E%3C/svg%3E">
+<!-- All styles are inline: the loading screen has to paint before any other file arrives. -->
+<style>
+:root {
+  --u: 32px; --fx: 0px; --fy: 60px; --top: 56px;
+  --ink: #e9efff; --dim: #9fb0d8; --panel: rgba(8, 14, 34, .74); --line: rgba(150, 185, 255, .2);
+  --cyan: #16c8ff; --amber: #ffab1a; --violet: #a257ff; --coral: #ff4468;
+  --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
+body {
+  /* The same sky the 3D scene draws, so nothing jumps when the canvas fades in. */
+  background: linear-gradient(#040817 0%, #0a1434 38%, #2b1f44 58%, #b8552f 68.5%, #070d20 69.5%, #03060f 100%);
+  color: var(--ink); font: 300 16px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  -webkit-user-select: none; user-select: none; touch-action: none;
+}
+button { font: inherit; color: inherit; cursor: pointer; border: 0; background: none; padding: 0; touch-action: manipulation; }
+b { font-weight: 500; }
+[hidden] { display: none !important; }
+#scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; opacity: 0; transition: opacity .5s; }
+#scene.on { opacity: 1; }
+
+/* Screens: title, pause, and the cards that sit over the game. */
+.screen {
+  position: fixed; inset: 0; display: grid; place-items: center; padding: 20px; z-index: 5;
+  background: radial-gradient(ellipse at 50% 40%, rgba(4, 8, 22, .55), rgba(4, 8, 22, .82));
+  transition: opacity .3s; text-align: center;
+}
+.screen.out { opacity: 0; pointer-events: none; }
+.screen.clear { background: none; pointer-events: none; }
+.box {
+  width: min(360px, 100%); padding: 26px 24px 22px; border-radius: 18px; background: var(--panel);
+  border: 1px solid var(--line); box-shadow: 0 20px 60px rgba(0, 0, 0, .5); pointer-events: auto;
+}
+.box h2 { margin: 0 0 6px; font-weight: 200; font-size: 28px; letter-spacing: .04em; }
+.box p { margin: 6px 0; color: var(--dim); }
+.big { font-size: 46px; font-weight: 200; line-height: 1.1; color: var(--ink); font-variant-numeric: tabular-nums; }
+.rows { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; text-align: left; margin: 14px 0 4px; color: var(--dim); }
+.rows b { color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+.btn {
+  display: block; width: 100%; margin-top: 12px; padding: 13px 16px; border-radius: 12px; font-size: 17px; font-weight: 400;
+  letter-spacing: .03em; background: rgba(150, 185, 255, .1); border: 1px solid var(--line); transition: background .15s, transform .1s;
+}
+.btn:hover { background: rgba(150, 185, 255, .2); }
+.btn:active { transform: scale(.97); }
+.btn.go { background: linear-gradient(135deg, #12b4ea, #7a4fe8); border-color: transparent; color: #fff; font-weight: 500; }
+.btn.go:hover { filter: brightness(1.12); }
+.btn[disabled] { opacity: .4; pointer-events: none; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.fork {
+  display: inline-flex; align-items: center; gap: 8px; margin-top: 18px; padding: 8px 14px; border-radius: 999px; color: var(--ink);
+  text-decoration: none; font-size: 14px; border: 1px solid var(--line); background: rgba(150, 185, 255, .07);
+}
+.fork:hover { background: rgba(150, 185, 255, .18); }
+.fork svg { width: 16px; height: 16px; }
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin-top: 6px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.seg button { padding: 8px 4px; font-size: 14px; color: var(--dim); }
+.seg button.on { background: rgba(150, 185, 255, .22); color: var(--ink); }
+.label { margin-top: 14px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); text-align: left; }
+.how { text-align: left; font-size: 14px; color: var(--dim); margin: 10px 0 0; padding: 0; list-style: none; }
+.how li { margin: 5px 0; padding-left: 14px; position: relative; }
+.how li::before { content: ""; position: absolute; left: 0; top: .55em; width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); }
+
+/* Title and loading screen. */
+#title h1 { margin: 0; font-weight: 100; font-size: clamp(44px, 13vw, 76px); letter-spacing: .14em; line-height: 1; text-indent: .14em; }
+#title h1 span { font-weight: 300; background: linear-gradient(90deg, var(--cyan), var(--violet), var(--coral), var(--amber)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+#title .tag { color: var(--dim); margin: 18px 0 26px; }
+#boot { width: min(280px, 80vw); margin: 0 auto; min-height: 118px; }
+#bar { height: 3px; border-radius: 3px; background: rgba(150, 185, 255, .18); overflow: hidden; margin-top: 24px; }
+#bar i { display: block; height: 100%; width: 40%; border-radius: 3px; background: linear-gradient(90deg, var(--cyan), var(--violet)); animation: load 1.1s ease-in-out infinite; }
+@keyframes load { from { transform: translateX(-110%); } to { transform: translateX(260%); } }
+#boot-msg { color: var(--dim); font-size: 14px; margin-top: 12px; }
+.small { font-size: 13px; color: var(--dim); margin-top: 14px; }
+
+/* Heads-up display. Positions are in bubble diameters (--u) from the field's top-left corner. */
+#hud { position: fixed; inset: 0; pointer-events: none; z-index: 2; }
+#hud.off { visibility: hidden; }
+#hud button { pointer-events: auto; }
+#topbar {
+  position: absolute; left: var(--fx); width: calc(var(--u) * 10); top: 0; height: calc(var(--top) + var(--safe-t)); padding: var(--safe-t) 4px 0;
+  display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 6px;
+}
+#btn-pause { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; }
+#btn-pause i { width: 4px; height: 16px; background: var(--ink); border-radius: 2px; box-shadow: 9px 0 0 var(--ink); transform: translateX(-4.5px); }
+#btn-pause:hover { background: rgba(150, 185, 255, .14); }
+#score { font-size: clamp(26px, calc(var(--u) * .95), 40px); font-weight: 200; text-align: center; font-variant-numeric: tabular-nums; letter-spacing: .02em; text-shadow: 0 2px 12px rgba(0, 0, 0, .6); }
+#level { text-align: right; padding-right: 8px; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); line-height: 1.15; text-shadow: 0 1px 8px rgba(0, 0, 0, .7); }
+#level b { display: block; font-size: 22px; font-weight: 300; color: var(--ink); letter-spacing: 0; }
+#progress { position: absolute; left: var(--fx); width: calc(var(--u) * 10); top: calc(var(--top) + var(--safe-t) - 3px); height: 2px; background: rgba(150, 185, 255, .16); border-radius: 2px; }
+#progress i { display: block; height: 100%; width: 0; border-radius: 2px; background: linear-gradient(90deg, var(--cyan), var(--violet)); transition: width .5s; }
+#field { position: absolute; left: var(--fx); top: var(--fy); width: calc(var(--u) * 10); height: 0; }
+#field > * { position: absolute; transform: translate(-50%, -50%); }
+#moves { left: calc(var(--u) * 1.35); top: calc(var(--u) * 13.5); text-align: center; line-height: 1; text-shadow: 0 2px 10px rgba(0, 0, 0, .7); }
+#moves b { display: block; font-size: clamp(24px, calc(var(--u) * .95), 40px); font-weight: 200; font-variant-numeric: tabular-nums; }
+#moves span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+#moves.low b { color: var(--coral); }
+#swap-hint { left: calc(var(--u) * 3.92); top: calc(var(--u) * 14.25); width: 18px; height: 18px; opacity: .55; }
+#gems { left: calc(var(--u) * 8.05); top: calc(var(--u) * 12.45); font-size: 14px; white-space: nowrap; color: var(--dim); text-shadow: 0 1px 8px rgba(0, 0, 0, .8); }
+#gems b { color: var(--ink); font-size: 17px; }
+.gem { display: inline-block; width: .62em; height: .62em; transform: rotate(45deg); background: linear-gradient(135deg, #9df3ff, #5a7bff 60%, #b06bff); border-radius: 2px; margin: 0 .35em 0 .1em; vertical-align: .08em; }
+#gems.gift { animation: gift .9s; }
+@keyframes gift { 30% { transform: translate(-50%, -50%) scale(1.5); filter: brightness(1.8); } }
+.boost {
+  width: calc(var(--u) * 1.5); height: calc(var(--u) * 1.5); min-width: 44px; min-height: 44px; border-radius: 50%; background: var(--panel);
+  border: 1px solid var(--line); display: grid; place-items: center; align-content: center; gap: 1px; font-size: 11px; line-height: 1; color: var(--ink);
+}
+.boost svg { width: 46%; height: 46%; }
+.boost span { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.boost span .gem { margin: 0 .2em 0 0; }
+.boost[disabled] { opacity: .35; }
+.boost:not([disabled]):hover { border-color: rgba(150, 185, 255, .6); }
+#boost-comet { left: calc(var(--u) * 7.2); top: calc(var(--u) * 13.75); }
+#boost-clear { left: calc(var(--u) * 8.95); top: calc(var(--u) * 13.75); }
+#hint { left: calc(var(--u) * 5); top: calc(var(--u) * 10.9); width: calc(var(--u) * 9); text-align: center; font-size: 15px; color: var(--ink); text-shadow: 0 1px 10px #000; opacity: 0; transition: opacity .4s; }
+#hint.on { opacity: .9; }
+#toast { left: calc(var(--u) * 5); top: calc(var(--u) * 9.6); white-space: nowrap; padding: 8px 16px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 15px; opacity: 0; transition: opacity .3s; }
+#toast.on { opacity: 1; }
+.tally { position: absolute; transform: translate(-50%, -50%); font-weight: 300; font-variant-numeric: tabular-nums; text-shadow: 0 2px 12px rgba(0, 0, 0, .9); white-space: nowrap; animation: rise 1.25s ease-out forwards; pointer-events: none; }
+.tally small { display: block; font-size: .5em; letter-spacing: .1em; color: var(--amber); text-transform: uppercase; }
+@keyframes rise { 0% { opacity: 0; transform: translate(-50%, -30%) scale(.7); } 15% { opacity: 1; transform: translate(-50%, -60%) scale(1.08); } 70% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%, -190%) scale(1); } }
+#ver { position: fixed; right: calc(6px + env(safe-area-inset-right, 0px)); bottom: calc(4px + var(--safe-b)); z-index: 9; font-size: 10px; letter-spacing: .06em; color: rgba(190, 205, 240, .45); pointer-events: none; }
+#debug { position: fixed; left: 6px; bottom: 4px; z-index: 9; font: 11px/1.3 ui-monospace, monospace; color: #9fe; pointer-events: none; white-space: pre; }
+@media (prefers-reduced-motion: reduce) { #bar i, .tally, #gems.gift { animation-duration: .01s; } }
+</style>
+</head>
+<body>
+<canvas id="scene" aria-label="Bubbler playing field"></canvas>
+
+<div id="hud" class="off">
+  <div id="topbar">
+    <button id="btn-pause" aria-label="Pause"><i></i></button>
+    <div id="score">0</div>
+    <div id="level">Level<b>1</b></div>
+  </div>
+  <div id="progress" title="How much of this level is cleared"><i></i></div>
+  <div id="field">
+    <div id="moves"><b>30</b><span>moves</span></div>
+    <svg id="swap-hint" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h13l-3-3M20 16H7l3 3"/></svg>
+    <div id="gems"><i class="gem"></i><b>3</b></div>
+    <button class="boost" id="boost-comet" aria-label="Comet shot, 3 gems" title="Comet: a shot that ploughs through bubbles">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="16" cy="8" r="3.4" fill="currentColor"/><path d="M12.5 11.5 4 20M10 9l-5 5M15 14l-5 5"/></svg>
+      <span><i class="gem"></i>3</span>
+    </button>
+    <button class="boost" id="boost-clear" aria-label="Clear Skies, 2 gems" title="Clear Skies: lifts the Mist from every bubble in view">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3.6"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></svg>
+      <span><i class="gem"></i>2</span>
+    </button>
+    <div id="hint"></div>
+    <div id="toast"></div>
+  </div>
+  <div id="tallies"></div>
+</div>
+
+<!-- Loading screen. It is plain HTML so it shows before any script runs, then becomes the title screen. -->
+<section id="title" class="screen">
+  <div>
+    <h1>BUBBL<span>ER</span></h1>
+    <p class="tag">Glass bubbles over a lantern-lit lake.</p>
+    <div id="boot">
+      <div id="bar"><i></i></div>
+      <div id="boot-msg">Lighting the lanterns…</div>
+      <button class="btn go" id="btn-play" hidden>Play</button>
+      <button class="btn" id="btn-new" hidden>New run</button>
+    </div>
+    <a class="fork" href="%REPO_URL%" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="6" cy="5" r="2.2"/><circle cx="18" cy="5" r="2.2"/><circle cx="12" cy="19" r="2.2"/><path d="M6 7.2v2.3a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7.2M12 12.5v4.3"/></svg>
+      Fork me on GitHub
+    </a>
+    <p class="small">Open source. No ads. Yours to adapt.</p>
+  </div>
+</section>
+
+<section id="pause" class="screen" hidden>
+  <div class="box">
+    <h2>Paused</h2>
+    <button class="btn go" id="btn-resume">Resume</button>
+    <div class="pair">
+      <button class="btn" id="btn-sound">Sound on</button>
+      <button class="btn" id="btn-music">Music on</button>
+    </div>
+    <div class="label">Graphics</div>
+    <div class="seg" id="quality">
+      <button data-q="auto">Auto</button><button data-q="low">Low</button><button data-q="mid">Medium</button><button data-q="high">High</button>
+    </div>
+    <div class="label">How to play</div>
+    <ul class="how">
+      <li>Aim and release. Three of a colour pop; anything left hanging falls for double.</li>
+      <li>Tap the launcher to swap the two bubbles in hand.</li>
+      <li>A ringed <b>Comet</b> clears its row when popped. A white <b>Nova</b> bursts when touched.</li>
+      <li><b>Mist</b> hides a colour until something pops beside it. Black <b>Obsidian</b> only falls or shatters.</li>
+      <li>Gems arrive when you are stuck. Spend them on the two boosts beside the launcher.</li>
+    </ul>
+    <button class="btn" id="btn-restart">Restart run</button>
+    <a class="fork" href="%REPO_URL%" target="_blank" rel="noopener">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="6" cy="5" r="2.2"/><circle cx="18" cy="5" r="2.2"/><circle cx="12" cy="19" r="2.2"/><path d="M6 7.2v2.3a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7.2M12 12.5v4.3"/></svg>
+      Fork me on GitHub
+    </a>
+  </div>
+</section>
+
+<section id="cleared" class="screen clear out" hidden>
+  <div class="box">
+    <p id="cleared-kicker">Level cleared</p>
+    <div class="big" id="cleared-level">2</div>
+    <p id="cleared-reward">+15 moves</p>
+  </div>
+</section>
+
+<section id="revive" class="screen" hidden>
+  <div class="box">
+    <h2>Out of moves</h2>
+    <p id="revive-gift" hidden></p>
+    <p>A Second Wind gives you 8 more.</p>
+    <button class="btn go" id="btn-revive">Second Wind</button>
+    <button class="btn" id="btn-end">End the run</button>
+  </div>
+</section>
+
+<section id="over" class="screen" hidden>
+  <div class="box">
+    <p id="over-kicker">Run over</p>
+    <div class="big" id="over-score">0</div>
+    <div class="rows">
+      <span>Best</span><b id="over-best">0</b>
+      <span>Level reached</span><b id="over-level">1</b>
+      <span>Shots</span><b id="over-shots">0</b>
+      <span>Biggest clear</span><b id="over-big">0</b>
+    </div>
+    <button class="btn go" id="btn-again">Play again</button>
+  </div>
+</section>
+
+<div id="ver">%APP_VERSION%</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bubbler",
+  "compatibility_date": "2026-10-01",
+  // Static site: everything in ./dist is served as-is, there is no Worker script.
+  "assets": {
+    "directory": "./dist"
+  },
+  "preview_urls": false
+}
