@@ -40,6 +40,7 @@ Keyboard: arrows aim, space fires, S swaps, 1 and 2 use the boosts, Esc pauses.
 | `npm test` | Rule tests (`tools/test`) |
 | `npm run tune` | Headless bots play whole runs and print how the game pays out |
 | `npm run check:size` | Fails if the files needed before Play exceed the download budget, or a chunk loaded later exceeds its own |
+| `npm run check:nan` | Fails if any place, or the board in front of it, renders a NaN pixel, which blanks the screen on the high tier once the bloom spreads it (built site, needs Chrome) |
 | `npm run perf` | Load time, fly-over and play frame rate on the built site, with network and CPU throttled (needs Chrome); `-- --place fjord` measures another place |
 | `npm run deploy` | Build, size check, `wrangler deploy` |
 

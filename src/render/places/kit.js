@@ -14,6 +14,9 @@
 // 6. At most 8 draw calls, no textures, no extra passes. Full-screen shaders (dome, water) cost
 //    no more than Lantern Lake's; fine detail goes on small meshes.
 // 7. Fixed seeds: a place looks the same on every visit.
+// 8. No NaN, ever. With multisampling, edge pixels are shaded just outside the triangle, so
+//    varyings run past their range there: clamp them before pow(), sqrt() or log(). On the high
+//    tier the bloom blurs a single NaN pixel into a blank screen. `npm run check:nan` looks.
 //
 // A place's sky shader is a GLSL chunk that defines `vec3 skyColor(vec3 d, float glow)` and
 // `float lakeFront(vec3 d)` (1 down the lake ahead of the player, 0 behind), shared by the

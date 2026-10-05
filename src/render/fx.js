@@ -191,7 +191,8 @@ export class Fx {
         varying vec4 vTint;
         void main() {
           float d = length(vUv);
-          float band = exp(-pow((d - 0.88) / 0.06, 2.0)) + (1.0 - smoothstep(0.0, 0.9, d)) * 0.12;
+          float k = (d - 0.88) / 0.06; // squared by hand: pow() of a negative number is undefined
+          float band = exp(-k * k) + (1.0 - smoothstep(0.0, 0.9, d)) * 0.12;
           gl_FragColor = vec4(vTint.rgb * band * vTint.a, 1.0);
           ${OUT}
         }`,

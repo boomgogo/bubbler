@@ -119,8 +119,10 @@ function aurora(shared, mirror) {
       varying vec2 vUv;
       varying vec4 vInfo;
       void main() {
-        float s = vUv.x;
-        float v = vUv.y;
+        // Clamped: with multisampling, pixels on the edge are shaded just past it, and
+        // pow(1.0 - v) of a negative number is NaN, which the bloom spreads over the screen.
+        float s = clamp(vUv.x, 0.0, 1.0);
+        float v = clamp(vUv.y, 0.0, 1.0);
         float x = s * vInfo.x * 40.0;
         // Rays: fine vertical streaks that drift along the curtain and flicker.
         float rays = 0.55 + 0.45 * sin(x * 0.9 + sin(x * 0.13 + uTime * 0.4) * 3.0 + uTime * 0.7);

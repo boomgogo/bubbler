@@ -140,7 +140,7 @@ void main() {
     TEST(vec3(-0.5, -0.8660254, 0.0), vNbrB.z)
     if (code > 0.5) {
       vec3 hn = normalize(o + R * tBest - hit);
-      float facing = max(dot(hn, -R), 0.0);
+      float facing = clamp(dot(hn, -R), 0.0, 1.0); // 1.0 - facing goes into pow()
       vec3 second = env(reflect(R, hn), vWorld, 1.5);
       refl = mix(neighbourColor(code) * (0.1 + 0.9 * facing * facing), second, 0.05 + 0.95 * pow(1.0 - facing, 5.0));
     }
