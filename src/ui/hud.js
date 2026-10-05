@@ -6,6 +6,9 @@ const $ = (id) => document.getElementById(id);
 const fmt = (n) => Math.round(n).toLocaleString('en-US');
 const gemsHtml = (n) => `<i class="gem"></i>${n}`;
 
+const HINT_MIN = 2.5; // seconds a line stays up before a waiting one may replace it
+const HINT_GAP = 0.35; // the old line fades out before the next fades in
+
 const GIFT_TEXT = {
   dry: 'A gem, to get you going again',
   moves: 'Running low on moves: gems for you',
@@ -17,7 +20,9 @@ export class Hud {
     this.shown = 0; // the score currently displayed, which chases the real one
     this.target = 0;
     this.toastTimer = 0;
-    this.hintTimer = 0;
+    this.hints = []; // lines waiting their turn
+    this.line = null; // the line on show, with its age in seconds
+    this.hintGap = 0;
     const click = (id, fn) => $(id).addEventListener('click', fn);
     click('btn-pause', on.pause);
     click('btn-resume', on.resume);
@@ -32,6 +37,7 @@ export class Hud {
     click('btn-play', on.play);
     click('btn-new', on.newRun);
     $('quality').addEventListener('click', (e) => e.target.dataset.q && on.quality(e.target.dataset.q));
+    $('skip').textContent = matchMedia('(pointer: coarse)').matches ? 'Tap to skip' : 'Click to skip';
     $('boost-comet').querySelector('span').innerHTML = gemsHtml(GEMS.comet);
     $('boost-clear').querySelector('span').innerHTML = gemsHtml(GEMS.clear);
   }
@@ -101,6 +107,7 @@ export class Hud {
   }
 
   frame(dt) {
+    this.#hintFrame(dt);
     if (this.shown === this.target) return;
     const gap = this.target - this.shown;
     this.shown = Math.abs(gap) < 1 ? this.target : this.shown + gap * (1 - Math.exp(-dt * 7));
@@ -126,12 +133,56 @@ export class Hud {
     this.toastTimer = setTimeout(() => el.classList.remove('on'), seconds * 1000);
   }
 
-  hint(text, seconds = 5) {
+  // The line under the board. Lines wait their turn on the game's clock, so pausing holds them.
+  // An empty text clears the controls hints; a line that teaches a special is never cut short.
+  hint(text, seconds = 5, { teach = false, onShow } = {}) {
+    if (text) {
+      this.hints.push({ text, seconds, teach, onShow });
+      return;
+    }
+    this.hints = this.hints.filter((h) => h.teach);
+    if (this.line && !this.line.teach) this.line.seconds = 0;
+  }
+
+  // Forgets the lines still waiting; the one on show finishes. Returns how many were dropped.
+  dropHints() {
+    const n = this.hints.length;
+    this.hints = [];
+    return n;
+  }
+
+  #hintFrame(dt) {
+    const line = this.line;
+    if (line) {
+      line.age += dt;
+      if (line.age < line.seconds && !(this.hints.length && line.age >= HINT_MIN)) return;
+      $('hint').classList.remove('on');
+      this.line = null;
+      this.hintGap = HINT_GAP;
+      return;
+    }
+    if ((this.hintGap -= dt) > 0 || !this.hints.length) return;
+    this.line = { ...this.hints.shift(), age: 0 };
     const el = $('hint');
-    el.textContent = text;
-    el.classList.toggle('on', !!text);
-    clearTimeout(this.hintTimer);
-    if (text) this.hintTimer = setTimeout(() => el.classList.remove('on'), seconds * 1000);
+    el.textContent = this.line.text;
+    el.classList.add('on');
+    this.line.onShow?.();
+  }
+
+  // During the level fly-over only the hint line and a skip note are on screen.
+  fly(on) {
+    $('hud').classList.toggle('fly', on);
+  }
+
+  // A curtain over the scene, in the colour of the place it hides, while the place changes.
+  veil(on, color) {
+    const el = $('veil');
+    if (color) el.style.background = color;
+    el.classList.toggle('on', on);
+  }
+
+  theme(color) {
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', color);
   }
 
   gift({ amount, reason }) {
@@ -142,10 +193,15 @@ export class Hud {
     if (GIFT_TEXT[reason]) this.toast(`${gemsHtml('+' + amount)} &nbsp;${GIFT_TEXT[reason]}`, 3.2);
   }
 
-  cleared(level, show) {
+  // placeName: where the next level is played, when that changes.
+  cleared(level, show, placeName = null) {
     $('cleared-level').textContent = level + 1;
     $('cleared-kicker').textContent = `Level ${level} cleared · next`;
     $('cleared-reward').textContent = `+${MOVES_PER_LEVEL} moves · points ×${level + 1}`;
+    if (show) {
+      $('cleared-place').hidden = !placeName;
+      $('cleared-place').textContent = placeName ? `On to ${placeName}` : '';
+    }
     this.show('cleared', show);
   }
 

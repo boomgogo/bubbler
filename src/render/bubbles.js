@@ -1,4 +1,4 @@
-// Every bubble on screen is one instance of a single sphere: one draw call.
+// Every bubble on screen is one instance of a single sphere: one draw call (two during close-ups).
 // The shader fakes solid glass with a lit core. Per pixel it looks up the lake's cube map twice,
 // once for the reflection and once for the view through the ball, and tests the reflection ray
 // against the six neighbouring bubbles so they show up in each other.
@@ -8,7 +8,9 @@ import {
 } from 'three';
 import { KIND } from '../config.js';
 
-export const CAPACITY = 360;
+export const CAPACITY = 512; // a whole column is on screen during the fly-over
+const HERO_CAPACITY = 24;
+const HERO_RANGE = 4.5;
 export const RADIUS = 0.485; // drawn slightly under half a cell so neighbours do not quite touch
 
 // Cyan, amber, violet, coral, mint.
@@ -205,14 +207,16 @@ void main() {
   #include <colorspace_fragment>
 }`;
 
-export class Bubbles {
-  constructor(tier, environment) {
+// One instanced draw of the bubble sphere: the per-instance arrays and the mesh that draws them.
+class Batch {
+  constructor(capacity, material) {
+    this.capacity = capacity;
     this.count = 0;
-    this.posScale = new Float32Array(CAPACITY * 4);
-    this.look = new Float32Array(CAPACITY * 4);
-    this.nbrA = new Float32Array(CAPACITY * 3);
-    this.nbrB = new Float32Array(CAPACITY * 3);
-    this.flash = new Float32Array(CAPACITY);
+    this.posScale = new Float32Array(capacity * 4);
+    this.look = new Float32Array(capacity * 4);
+    this.nbrA = new Float32Array(capacity * 3);
+    this.nbrB = new Float32Array(capacity * 3);
+    this.flash = new Float32Array(capacity);
     this.attributes = [
       ['aPosScale', this.posScale, 4],
       ['aLook', this.look, 4],
@@ -224,48 +228,22 @@ export class Bubbles {
       attribute.setUsage(DynamicDrawUsage);
       return [name, attribute];
     });
-    this.material = new ShaderMaterial({
-      vertexShader,
-      fragmentShader,
-      uniforms: {
-        uEnv: { value: null },
-        uEnvPos: { value: new Vector3(0, 0.5, 0) },
-        uEnvRadius: { value: 30 },
-        uPalette: { value: [...PALETTE, '#dfe9ff'].map((hex) => new Color(hex)) },
-        uTime: { value: 0 },
-        uTopY: { value: 0 },
-      },
-    });
-    this.mesh = new Mesh(undefined, this.material);
+    this.mesh = new Mesh(undefined, material);
     this.mesh.frustumCulled = false;
-    this.setTier(tier, environment);
   }
 
-  setTier(tier, environment) {
-    const sphere = new SphereGeometry(1, tier.segs[0], tier.segs[1]);
+  setSphere(widthSegments, heightSegments) {
+    const sphere = new SphereGeometry(1, widthSegments, heightSegments);
     const geometry = new InstancedBufferGeometry();
     geometry.index = sphere.index;
     geometry.setAttribute('position', sphere.attributes.position);
     for (const [name, attribute] of this.attributes) geometry.setAttribute(name, attribute);
     this.mesh.geometry?.dispose();
     this.mesh.geometry = geometry;
-    this.material.defines = {};
-    if (tier.neighbors) this.material.defines.NEIGHBORS = '';
-    if (environment.hdr) this.material.defines.HDR_ENV = '';
-    this.material.uniforms.uEnv.value = environment.texture;
-    this.material.uniforms.uEnvPos.value.copy(environment.cubeCamera.position);
-    this.material.needsUpdate = true;
   }
 
-  begin() {
-    this.count = 0;
-  }
-
-  // look: { c, k, m, seed }; nbr: six neighbour codes or null.
-  push(x, y, z, scale, look, nbr = null, flash = 0) {
-    const i = this.count;
-    if (i >= CAPACITY) return;
-    this.count++;
+  push(x, y, z, scale, look, nbr, flash) {
+    const i = this.count++;
     this.posScale.set([x, y, z, scale], i * 4);
     this.look.set([look.c < 0 ? COLORLESS : look.c, look.k, look.m, look.seed], i * 4);
     if (nbr) {
@@ -280,6 +258,59 @@ export class Bubbles {
 
   end() {
     this.mesh.geometry.instanceCount = this.count;
+    this.mesh.visible = this.count > 0;
     for (const [, attribute] of this.attributes) attribute.needsUpdate = true;
+  }
+}
+
+export class Bubbles {
+  constructor(tier, environment) {
+    this.material = new ShaderMaterial({
+      vertexShader,
+      fragmentShader,
+      uniforms: {
+        uEnv: { value: null },
+        uEnvPos: { value: new Vector3(0, 0.5, 0) },
+        uEnvRadius: { value: 30 },
+        uPalette: { value: [...PALETTE, '#dfe9ff'].map((hex) => new Color(hex)) },
+        uTime: { value: 0 },
+        uTopY: { value: 0 },
+      },
+    });
+    this.main = new Batch(CAPACITY, this.material);
+    // Close to the camera, as in the fly-over's close-ups, a bubble is drawn with a finely
+    // divided sphere so its outline stays round on every tier.
+    this.hero = new Batch(HERO_CAPACITY, this.material);
+    this.hero.setSphere(48, 32);
+    this.meshes = [this.main.mesh, this.hero.mesh];
+    this.heroEye = null; // the camera position while close-ups are possible, else null
+    this.setTier(tier, environment);
+  }
+
+  setTier(tier, environment) {
+    this.main.setSphere(tier.segs[0], tier.segs[1]);
+    this.material.defines = {};
+    if (tier.neighbors) this.material.defines.NEIGHBORS = '';
+    if (environment.hdr) this.material.defines.HDR_ENV = '';
+    this.material.uniforms.uEnv.value = environment.texture;
+    this.material.uniforms.uEnvPos.value.copy(environment.cubeCamera.position);
+    this.material.needsUpdate = true;
+  }
+
+  begin() {
+    this.main.count = this.hero.count = 0;
+  }
+
+  // look: { c, k, m, seed }; nbr: six neighbour codes or null.
+  push(x, y, z, scale, look, nbr = null, flash = 0) {
+    const e = this.heroEye;
+    const near = e && (x - e.x) ** 2 + (y - e.y) ** 2 + (z - e.z) ** 2 < HERO_RANGE ** 2;
+    const batch = near && this.hero.count < this.hero.capacity ? this.hero : this.main;
+    if (batch.count < batch.capacity) batch.push(x, y, z, scale, look, nbr, flash);
+  }
+
+  end() {
+    this.main.end();
+    this.hero.end();
   }
 }

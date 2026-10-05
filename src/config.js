@@ -45,6 +45,11 @@ export const GEMS = {
   crowdGift: 1,
 };
 
+// Where each level is played. The places change every few levels and start over after the last.
+export const LEVELS_PER_PLACE = 3;
+export const PLACES = ['lake', 'fjord'];
+export const placeOf = (level) => PLACES[Math.floor((Math.max(1, level) - 1) / LEVELS_PER_PLACE) % PLACES.length];
+
 // What a level is made of. `rows` is the middle of the range; the generator varies it.
 // Level 2 introduces Mist; level 3 introduces Obsidian together with the Nova that breaks it.
 export function levelParams(level) {

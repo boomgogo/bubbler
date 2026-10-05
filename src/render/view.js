@@ -1,13 +1,15 @@
 // Draws the game. The view owns no rules: it is told what the board looks like and what
 // just happened, and turns that into bubbles, motion and effects.
-import { Scene, PerspectiveCamera } from 'three';
+import { Scene, PerspectiveCamera, Vector3 } from 'three';
 import { COLS, ROW_H, KIND } from '../config.js';
 import { cellX, cellY, neighbor, inGrid } from '../core/grid.js';
 import { createRenderer, Quality } from './renderer.js';
 import { Environment } from './environment.js';
+import { lake } from './places/index.js';
 import { Bubbles, reflectCode } from './bubbles.js';
 import { Fx, colorOf } from './fx.js';
 import { Stage } from './stage.js';
+import { Flight, pickCloseUps, planFlight, poseCamera } from './flyover.js';
 import { computeFrame, TOP_Y, WATER_Y, EYE_Y, CAM_DIST, LAUNCH_WORLD_Y } from './layout.js';
 
 const GRAVITY = 34;
@@ -30,15 +32,19 @@ export class View {
       onTier: (t) => this.#applyTier(t),
       onScale: () => this.resize(),
     });
-    this.env = new Environment();
+    this.env = new Environment(lake);
     this.env.setTier(this.renderer, this.quality.tier);
     this.bubbles = new Bubbles(this.quality.tier, this.env);
     this.fx = new Fx(this.quality.tier, this.env);
     this.stage = new Stage(this.env);
     this.scene = new Scene();
-    this.scene.add(this.stage.group, this.bubbles.mesh, ...this.fx.objects);
+    this.scene.add(this.stage.group, ...this.bubbles.meshes, ...this.fx.objects);
     this.camera = new PerspectiveCamera();
     this.camera.matrixAutoUpdate = true;
+    // The playing camera, worked out afresh every frame; a fly-over starts and ends on it.
+    this.live = { eye: new Vector3(), center: new Vector3(), frustum: {} };
+    this.rest = { eye: this.live.eye, target: this.live.center, w: 1 };
+    this.flight = null;
 
     this.time = 0;
     this.tick = 0;
@@ -82,6 +88,17 @@ export class View {
       this.renderer.compileAsync(this.env.scene, this.camera),
       this.renderer.compileAsync(this.scene, this.camera),
     ]);
+  }
+
+  // Builds a place's scene and compiles its shaders off to the side. Resolves to the scene.
+  preparePlace(place) {
+    const group = this.env.build(place);
+    return this.renderer.compileAsync(group, this.camera, this.env.scene).then(() => group);
+  }
+
+  // Swaps the place in. The cube map is reshot at once, so every reflection follows.
+  setPlace(place, group) {
+    this.env.setPlace(place, group, this.renderer);
   }
 
   #applyTier(tier) {
@@ -151,6 +168,20 @@ export class View {
     this.unmist.set(id, this.time + delaySeconds);
   }
 
+  // Soft rings round a bubble, to point at it. Board coordinates; placed where the board is
+  // heading, so a scroll in progress does not leave them behind.
+  mark(bx, by) {
+    this.#rings(this.worldX(bx), TOP_Y - by + this.scroll.target);
+  }
+
+  markLauncher() {
+    this.#rings(ACTIVE.x, ACTIVE.y);
+  }
+
+  #rings(x, y) {
+    for (const delay of [0, 0.45, 0.9]) this.fx.ring(x, y, 0.3, colorOf(-1), { from: 0.55, to: 0.95, life: 0.75, delay, gain: 0.8 });
+  }
+
   // Bubbles around a landing spot give a little.
   nudge(bx, by) {
     for (const s of this.statics) {
@@ -216,17 +247,66 @@ export class View {
     this.stage.setAim(pts, colorOf(look.k === KIND.COLOR ? look.c : -1), ghost, angle);
   }
 
+  // The level-start fly-over. Returns false when it does not play (reduced motion).
+  // count: close-ups. prefer(look): kinds to show first. onHold(look): a close-up begins.
+  flyover(board, { count, quick = false, prefer, onHold, onDone }) {
+    if (this.reducedMotion) return false;
+    this.sync(board, 0);
+    const picks = pickCloseUps(this.statics, count, { neighbors: this.quality.tier.neighbors, prefer });
+    // Planned where the board will be once any slide-in has finished.
+    const at = (by) => TOP_Y - by + this.scroll.target;
+    const top = at(cellY(0));
+    const world = picks.map((p) => new Vector3(this.worldX(p.x), at(p.y), 0));
+    const lingers = picks.map((p) => !!prefer?.(p.look));
+    const flight = new Flight(planFlight(world, { top, side: Math.random() < 0.5 ? -1 : 1, quick, lingers }), this.time);
+    Object.assign(flight, { top: Math.max(TOP_Y, top + 0.5), onHold: (i) => onHold?.(picks[i].look), onDone });
+    this.flight = flight;
+    this.quality.hold();
+    return true;
+  }
+
+  // Cuts the fly-over short: straight back to the playing view.
+  skipFlight() {
+    const f = this.flight;
+    if (!f || f.skipped) return;
+    this.flight = Object.assign(f.cut(this.time, this.live), { top: f.top, onDone: f.onDone, skipped: true });
+  }
+
+  // Drops the fly-over without finishing it, for a restart.
+  stopFlight() {
+    this.flight = null;
+    this.quality.release();
+  }
+
+  #flightStep(from, to) {
+    const f = this.flight;
+    // Hardware that cannot draw the close-ups at a watchable rate gets straight back to the game:
+    // the clock advances at most 0.1 s a frame, so a crawl would also stretch the flight out.
+    // A single hitch is not a crawl; half a second of slow frames is.
+    if (this.quality.ema > 55) f.slowSince ??= to;
+    else f.slowSince = null;
+    if (!f.skipped && f.slowSince !== null && to - f.slowSince > 0.5) return this.skipFlight();
+    for (const i of f.holdsBetween(from, to)) f.onHold?.(i);
+    if (!f.done(to)) return;
+    this.stopFlight();
+    f.onDone?.();
+  }
+
   kick(amount) {
     if (!this.reducedMotion) this.shake = Math.max(this.shake, amount);
   }
 
   get busy() {
-    return this.dying.length > 0 || this.falling.length > 0 || this.flying !== null;
+    return this.dying.length > 0 || this.falling.length > 0 || this.flying !== null || this.flight !== null;
   }
 
   frame(dt) {
     const t = (this.time += dt);
-    const { bubbles, fx } = this;
+    const { bubbles, fx, flight } = this;
+    const pose = this.#camera(t);
+    // In flight the whole column shows; landing, the rows above the field shrink back to specks.
+    const topY = flight ? TOP_Y + (flight.top - TOP_Y) * (1 - pose.w) : TOP_Y;
+    bubbles.heroEye = flight ? this.camera.position : null;
     const ease = 1 - Math.exp(-dt * 9);
     this.scroll.y += (this.scroll.target - this.scroll.y) * ease;
     this.shake *= Math.exp(-dt * 10);
@@ -238,7 +318,7 @@ export class View {
     for (const s of this.statics) {
       let x = this.worldX(s.x) + sx;
       let y = this.worldY(s.y) + sy;
-      if (y > TOP_Y + 1.5) continue;
+      if (y > Math.max(TOP_Y, topY) + 1.5) continue;
       const w = this.wobble.get(s.id);
       if (w) {
         const age = t - w.t0;
@@ -342,28 +422,32 @@ export class View {
 
     bubbles.end();
     bubbles.material.uniforms.uTime.value = t;
-    bubbles.material.uniforms.uTopY.value = TOP_Y;
+    bubbles.material.uniforms.uTopY.value = topY;
     this.env.update(t);
     fx.update(t, this.frameRect.unit * this.renderer.getPixelRatio());
+    this.stage.setFade(flight ? pose.w * pose.w : 1);
     this.stage.update(t, this.frameRect.unit * this.renderer.getPixelRatio());
-    this.#camera(t);
     this.#render();
+    if (flight) this.#flightStep(t - dt, t);
   }
 
-  // The screen is a window onto the plane the board lies in. Moving the eye behind that
-  // window shifts the lake and the lanterns against the board, which stays put on screen.
+  // The playing camera: the screen is a window onto the plane the board lies in. Moving the eye
+  // behind that window shifts the lake and the lanterns against the board, which stays put on
+  // screen. The window is kept as its edges at unit distance from the eye. In flight the camera
+  // follows the fly-over instead, which starts and ends on this one.
   #camera(t) {
     const f = this.frameRect;
     const sway = this.reducedMotion ? 0 : 1;
     const ex = (Math.sin(t * 0.23) * 0.5 + this.pointerX * 0.6) * sway;
     const ey = EYE_Y + Math.sin(t * 0.31) * 0.16 * sway;
-    const cam = this.camera;
-    cam.position.set(ex, ey, CAM_DIST);
-    cam.updateMatrixWorld();
-    const near = 1;
-    const k = near / CAM_DIST;
-    cam.projectionMatrix.makePerspective((f.left - ex) * k, (f.right - ex) * k, (f.top - ey) * k, (f.bottom - ey) * k, near, 2000);
-    cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+    const live = this.live;
+    const k = 1 / CAM_DIST;
+    live.eye.set(ex, ey, CAM_DIST);
+    live.center.set((f.left + f.right) / 2, (f.top + f.bottom) / 2, 0);
+    Object.assign(live.frustum, { left: (f.left - ex) * k, right: (f.right - ex) * k, top: (f.top - ey) * k, bottom: (f.bottom - ey) * k });
+    const pose = this.flight ? this.flight.sample(t, live) : this.rest;
+    poseCamera(this.camera, pose, live);
+    return pose;
   }
 
   #render() {

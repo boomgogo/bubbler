@@ -6,6 +6,11 @@ import { rowLen, forNeighbors, cellKey } from './grid.js';
 let nextId = 1;
 export const makeBubble = (k, c = -1, m = 0) => ({ id: nextId++, k, c, m });
 
+// What the player has to learn about a bubble: 'comet', 'nova', 'obsidian', 'mist', or null for
+// a plain colour. Mist hides whatever is underneath, so it counts as its own kind.
+const SPECIAL_NAMES = [null, 'comet', 'nova', 'obsidian'];
+export const specialName = (b) => (b ? (b.m ? 'mist' : SPECIAL_NAMES[b.k] ?? null) : null);
+
 const matches = (b, color) =>
   b !== null && b.m === 0 && b.c === color && (b.k === KIND.COLOR || b.k === KIND.COMET);
 
@@ -47,6 +52,19 @@ export class Board {
       if (this.rows[r].some((b) => b !== null)) return r;
     }
     return -1;
+  }
+
+  // For each special in rows from..to, the lowest cell holding one, as { comet: [r, c], ... }.
+  firstOfKinds(from, to) {
+    const out = {};
+    for (let r = Math.min(to, this.rows.length - 1); r >= Math.max(0, from); r--) {
+      const row = this.rows[r];
+      for (let c = 0; c < row.length; c++) {
+        const name = specialName(row[c]);
+        if (name && !out[name]) out[name] = [r, c];
+      }
+    }
+    return out;
   }
 
   // Same-colour bubbles connected to (r, c), as [r, c, steps from the start].

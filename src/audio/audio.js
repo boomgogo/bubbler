@@ -1,5 +1,7 @@
 // All sound is synthesised here with WebAudio: there are no audio files to download.
 // Pops are notes on a pentatonic scale that climb through a chain, so a big clear plays a run.
+// The music is a score per place (see Band below), written in D-major-friendly keys so the
+// pops always sit in tune with it.
 
 const SCALE = [0, 2, 4, 7, 9]; // major pentatonic, in semitones
 const noteHz = (step, base = 293.66) => base * 2 ** ((SCALE[step % 5] + 12 * Math.floor(step / 5)) / 12);
@@ -11,6 +13,8 @@ export class Audio {
     this.ctx = null;
     this.step = 0; // position in the scale within the current chain
     this.lastPop = 0;
+    this.score = null; // what the music should be playing
+    this.band = null; // what it is playing
   }
 
   // Browsers only let audio start from a tap or key press; call this from one.
@@ -36,8 +40,26 @@ export class Audio {
     this.noiseBuffer = ctx.createBuffer(1, len, len);
     const data = this.noiseBuffer.getChannelData(0);
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
-    this.#startMusic();
+    if (this.score) this.#play(this.score);
     this.setMusic(this.music);
+    // Notes are booked a second ahead, so a late timer never leaves a gap.
+    this.ticker = setInterval(() => {
+      if (this.band && this.ctx.state === 'running') this.band.schedule(this.ctx.currentTime + 1.2, this.music);
+    }, 250);
+  }
+
+  // Changes the music, crossfading from whatever is playing. Before the first tap it only
+  // remembers the score.
+  setScore(score) {
+    if (score === this.score) return;
+    this.score = score;
+    if (this.ctx) this.#play(score);
+  }
+
+  #play(score) {
+    const old = this.band;
+    this.band = new Band(this.ctx, this.bed, this.noiseBuffer, score, old ? 2.5 : 0.4);
+    old?.stop(2);
   }
 
   suspend() {
@@ -59,7 +81,7 @@ export class Audio {
   }
 
   // One enveloped oscillator. `at` is seconds from now.
-  #tone(type, hz, at, dur, gain, { to = hz, dest = this.fx, attack = 0.004 } = {}) {
+  #tone(type, hz, at, dur, gain, { to = hz } = {}) {
     const ctx = this.ctx;
     const t = ctx.currentTime + at;
     const osc = ctx.createOscillator();
@@ -68,9 +90,9 @@ export class Audio {
     osc.frequency.setValueAtTime(hz, t);
     if (to !== hz) osc.frequency.exponentialRampToValueAtTime(to, t + dur);
     env.gain.setValueAtTime(0.0001, t);
-    env.gain.exponentialRampToValueAtTime(gain, t + attack);
+    env.gain.exponentialRampToValueAtTime(gain, t + 0.004);
     env.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    osc.connect(env).connect(dest);
+    osc.connect(env).connect(this.fx);
     osc.start(t);
     osc.stop(t + dur + 0.02);
   }
@@ -196,47 +218,233 @@ export class Audio {
   gameOver() {
     if (this.ok) [7, 5, 4, 2, 0].forEach((s, i) => this.#tone('triangle', noteHz(s, 146.83), i * 0.2, 0.7, 0.14));
   }
+}
 
-  // The music is a slow drone: two detuned voices per chord tone through a breathing filter,
-  // stepping through four chords, with a soft bell now and then.
-  #startMusic() {
+const midiHz = (n) => 440 * 2 ** ((n - 69) / 12);
+
+// One score playing: its own bus into the music bed, an echo, an optional bed of noise (wind,
+// surf), and the instruments the score plays its bars on. Works on any audio context, so a
+// score can also be rendered offline.
+//
+// A score is { bpm, beats, level, echo, air, bar(play, index, time) }. bar() books one bar of
+// notes starting at audio time `time`, through `play`: midi numbers in, instruments out.
+export class Band {
+  constructor(ctx, dest, noise, score, fadeIn = 0.4) {
+    this.ctx = ctx;
+    this.score = score;
+    this.noise = noise;
+    this.beat = 60 / score.bpm;
+    this.barLength = this.beat * (score.beats ?? 4);
+    this.index = 0;
+    this.next = ctx.currentTime + 0.1;
+    this.sources = []; // long-running sources to stop with the band
+
+    const bus = (this.bus = ctx.createGain());
+    bus.gain.setValueAtTime(0, ctx.currentTime);
+    bus.gain.setTargetAtTime(score.level ?? 1, ctx.currentTime, fadeIn / 3);
+    bus.connect(dest);
+
+    // A tape-style echo: a delay that feeds back through a lowpass, so repeats grow darker.
+    const e = { beats: 0.75, feedback: 0.3, mix: 0.3, tone: 2400, ...score.echo };
+    this.send = ctx.createGain();
+    const delay = ctx.createDelay(2);
+    delay.delayTime.value = Math.min(1.9, e.beats * this.beat);
+    const loop = ctx.createGain();
+    loop.gain.value = e.feedback;
+    const tone = ctx.createBiquadFilter();
+    tone.type = 'lowpass';
+    tone.frequency.value = e.tone;
+    const wet = ctx.createGain();
+    wet.gain.value = e.mix;
+    this.send.connect(delay).connect(tone).connect(loop).connect(delay);
+    tone.connect(wet).connect(bus);
+    this.nodes = [bus, this.send, delay, tone, loop, wet];
+
+    if (score.air) this.#air(score.air);
+    this.play = this.#instruments();
+  }
+
+  // Books every bar that starts before `until`. With the music off it only keeps count.
+  schedule(until, audible = true) {
+    const now = this.ctx.currentTime;
+    if (this.next < now - 0.05) this.next = now + 0.05; // the timer was held up: skip ahead
+    while (this.next < until) {
+      if (audible) this.score.bar(this.play, this.index, this.next);
+      this.index++;
+      this.next += this.barLength;
+    }
+  }
+
+  stop(fade = 2) {
+    const t = this.ctx.currentTime;
+    this.bus.gain.cancelScheduledValues(t);
+    this.bus.gain.setTargetAtTime(0, t, fade / 4);
+    this.next = Infinity;
+    for (const s of this.sources) s.stop(t + fade + 0.5);
+    setTimeout(() => this.nodes.forEach((n) => n.disconnect()), (fade + 1) * 1000);
+  }
+
+  // A soft, slowly swelling bed of filtered noise.
+  #air({ type = 'lowpass', hz = 500, q = 0.7, gain = 0.02, swell = 0.1, sweep = 0 }) {
     const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
     const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 700;
-    filter.Q.value = 0.6;
+    filter.type = type;
+    filter.frequency.value = hz;
+    filter.Q.value = q;
+    const level = ctx.createGain();
+    level.gain.value = gain;
     const lfo = ctx.createOscillator();
-    const lfoGain = ctx.createGain();
-    lfo.frequency.value = 0.07;
-    lfoGain.gain.value = 260;
-    lfo.connect(lfoGain).connect(filter.frequency);
+    lfo.frequency.value = swell;
+    const depth = ctx.createGain();
+    depth.gain.value = gain * 0.8;
+    lfo.connect(depth).connect(level.gain);
+    if (sweep) {
+      const sweepDepth = ctx.createGain();
+      sweepDepth.gain.value = sweep;
+      lfo.connect(sweepDepth).connect(filter.frequency);
+    }
+    src.connect(filter).connect(level).connect(this.bus);
+    src.start();
     lfo.start();
-    filter.connect(this.bed);
-    this.voices = [0, 1, 2].flatMap((i) =>
-      [-4, 4].map((cents) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = i === 0 ? 'triangle' : 'sawtooth';
-        osc.detune.value = cents;
-        gain.gain.value = i === 0 ? 0.11 : 0.035;
-        osc.connect(gain).connect(filter);
-        osc.start();
-        return { osc, i };
-      }),
-    );
-    // D, B minor, G, A: each as root, fifth and third in a low register.
-    const CHORDS = [[73.42, 110, 185], [61.74, 92.5, 146.83], [49, 73.42, 123.47], [55, 82.41, 138.59]];
-    let chord = 0;
-    const change = () => {
-      if (ctx.state !== 'running') return;
-      const t = ctx.currentTime;
-      for (const v of this.voices) v.osc.frequency.setTargetAtTime(CHORDS[chord][v.i], t, 1.2);
-      if (this.music && Math.random() < 0.8) {
-        this.#tone('sine', noteHz(5 + Math.floor(Math.random() * 8)), 1 + Math.random() * 4, 3, 0.05, { dest: this.bed, attack: 0.05 });
-      }
-      chord = (chord + 1) % CHORDS.length;
+    this.sources.push(src, lfo);
+  }
+
+  #instruments() {
+    const ctx = this.ctx;
+    const band = this;
+    // One oscillator with a percussive envelope: a sharp start, then an exponential fade.
+    const strike = (type, hz, at, peak, decay, dest) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = type;
+      osc.frequency.value = hz;
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(peak, at + 0.005);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + decay);
+      osc.connect(g).connect(dest);
+      osc.start(at);
+      osc.stop(at + decay + 0.05);
     };
-    change();
-    this.musicTimer = setInterval(change, 9000);
+    // Where a note goes: straight to the bus, and some of it into the echo.
+    const out = (send) => {
+      const g = ctx.createGain();
+      g.connect(band.bus);
+      if (send > 0) {
+        const s = ctx.createGain();
+        s.gain.value = send;
+        g.connect(s).connect(band.send);
+      }
+      return g;
+    };
+    // A held envelope: linear attack, then a gentle release after `dur`.
+    const hold = (g, at, dur, peak, attack, release) => {
+      g.gain.setValueAtTime(0, at);
+      g.gain.linearRampToValueAtTime(peak, at + attack);
+      g.gain.setValueAtTime(peak, at + Math.max(attack, dur));
+      g.gain.setTargetAtTime(0, at + Math.max(attack, dur), release / 3);
+      return at + Math.max(attack, dur) + release;
+    };
+
+    return {
+      hz: midiHz,
+      beat: band.beat,
+      bar: band.barLength,
+      // Soft chord: a sawtooth and a triangle per note, slightly apart, through one lowpass.
+      pad(notes, at, dur, gain = 0.03, { attack = 1.2, release = 1.8, cutoff = 900, send = 0.15 } = {}) {
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = cutoff;
+        filter.Q.value = 0.3;
+        const env = out(send);
+        filter.connect(env);
+        const end = hold(env, at, dur, 1, attack, release);
+        for (const n of notes) {
+          for (const [type, cents, level] of [['sawtooth', -7, 0.6], ['triangle', 7, 1]]) {
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
+            osc.type = type;
+            osc.frequency.value = midiHz(n);
+            osc.detune.value = cents;
+            g.gain.value = gain * level;
+            osc.connect(g).connect(filter);
+            osc.start(at);
+            osc.stop(end);
+          }
+        }
+      },
+      // Round low notes with a touch of the octave above, so small speakers still carry them.
+      bass(n, at, dur, gain = 0.08) {
+        const env = out(0);
+        const end = hold(env, at, dur, gain, 0.03, 0.35);
+        for (const [type, mult, level] of [['triangle', 1, 1], ['sine', 2, 0.3]]) {
+          const osc = ctx.createOscillator();
+          const g = ctx.createGain();
+          osc.type = type;
+          osc.frequency.value = midiHz(n) * mult;
+          g.gain.value = level;
+          osc.connect(g).connect(env);
+          osc.start(at);
+          osc.stop(end);
+        }
+      },
+      // A plucked string, somewhere between a koto and a kalimba.
+      pluck(n, at, gain = 0.05, { decay = 1.2, send = 0.25 } = {}) {
+        const dest = out(send);
+        const hz = midiHz(n);
+        strike('sine', hz, at, gain, decay, dest);
+        strike('triangle', hz * 2, at, gain * 0.22, decay * 0.35, dest);
+        strike('sine', hz * 3, at, gain * 0.2, 0.16, dest);
+      },
+      // A glass bell: inharmonic partials that die away faster the higher they are.
+      bell(n, at, gain = 0.04, { decay = 2.8, send = 0.5 } = {}) {
+        const dest = out(send);
+        const hz = midiHz(n);
+        strike('sine', hz, at, gain, decay, dest);
+        strike('sine', hz * 2.76, at, gain * 0.35, decay * 0.4, dest);
+        strike('sine', hz * 5.4, at, gain * 0.12, decay * 0.18, dest);
+      },
+      // A breathy flute-like line that eases into a vibrato as the note is held.
+      lead(n, at, dur, gain = 0.05, { send = 0.35, vibrato = 7 } = {}) {
+        const env = out(send);
+        const end = hold(env, at, dur, gain, 0.06, 0.3);
+        const lfo = ctx.createOscillator();
+        const depth = ctx.createGain();
+        lfo.frequency.value = 5.2;
+        depth.gain.setValueAtTime(0, at);
+        depth.gain.linearRampToValueAtTime(vibrato, at + Math.min(0.5, dur));
+        lfo.connect(depth);
+        for (const [type, mult, level] of [['sine', 1, 1], ['triangle', 2, 0.1]]) {
+          const osc = ctx.createOscillator();
+          const g = ctx.createGain();
+          osc.type = type;
+          osc.frequency.value = midiHz(n) * mult;
+          depth.connect(osc.detune);
+          g.gain.value = level;
+          osc.connect(g).connect(env);
+          osc.start(at);
+          osc.stop(end);
+        }
+        lfo.start(at);
+        lfo.stop(end);
+      },
+      // A brush of high noise, for a light pulse.
+      shaker(at, gain = 0.012, decay = 0.06) {
+        const src = ctx.createBufferSource();
+        src.buffer = band.noise;
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.value = 6500;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.0001, at);
+        g.gain.exponentialRampToValueAtTime(gain, at + 0.008);
+        g.gain.exponentialRampToValueAtTime(0.0001, at + decay);
+        src.connect(filter).connect(g).connect(band.bus);
+        src.start(at, Math.random() * 0.5);
+        src.stop(at + decay + 0.05);
+      },
+    };
   }
 }

@@ -2,13 +2,16 @@
 // through the view, the HUD and the sound.
 import { Game, clampAim } from './core/game.js';
 import { applyShot } from './core/rules.js';
-import { KIND, SHOT_SPEED, TICK_MS, FAIL_ROW, COLS } from './config.js';
+import { specialName } from './core/board.js';
+import { KIND, SHOT_SPEED, TICK_MS, FAIL_ROW, COLS, LEVELS_PER_PLACE, placeOf } from './config.js';
 import { cellX, cellY } from './core/grid.js';
 import { View, lookOf } from './render/view.js';
 import { guessTier } from './render/renderer.js';
 import { colorOf } from './render/fx.js';
 import { LAUNCH_WORLD_Y } from './render/layout.js';
+import { lake, loadPlace } from './render/places/index.js';
 import { Hud } from './ui/hud.js';
+import { Teacher, LINES } from './ui/teach.js';
 import { Audio } from './audio/audio.js';
 import { store } from './platform/storage.js';
 import { bindInput } from './platform/input.js';
@@ -17,9 +20,15 @@ const TICK = TICK_MS / 1000;
 
 export function start() {
   const settings = { sound: true, music: true, quality: 'auto', ...store.get('settings', {}) };
-  const debug = new URLSearchParams(location.search).has('debug');
+  const params = new URLSearchParams(location.search);
+  const debug = params.has('debug');
+  // Debug only: a fixed seed, a starting level, and a place that overrides the level's.
+  const debugSeed = debug && params.has('seed') ? Number(params.get('seed')) : null;
+  let debugPlace = debug ? params.get('place') : null;
   const canvas = document.getElementById('scene');
   const audio = new Audio(settings);
+  audio.setScore(lake.music);
+  const teacher = new Teacher();
 
   let game = null;
   let playing = false; // false while the title screen is up
@@ -32,6 +41,13 @@ export function start() {
   let timers = []; // { at, fn } on the view's clock, so pausing freezes them too
   let raf = 0;
   let last = 0;
+  let frozen = null; // debug: the view's clock pinned for screenshots
+  let place = lake; // the place on screen
+  const ready = new Map(); // places built and compiled, waiting to be shown: id -> { place, group }
+  const preparing = new Set();
+  let swapQueue = null; // while the veil is down for a change of place: what to do once it lifts
+  const swapping = () => swapQueue !== null;
+  let controlsShown = false;
 
   const hud = new Hud({
     play: () => begin(),
@@ -45,8 +61,8 @@ export function start() {
     restart: () => {
       store.remove('run');
       newGame(null);
+      startLevel(true, { slide: false });
       setPaused(false);
-      locked = false;
     },
     toggleSound: () => saveSettings({ sound: !settings.sound }),
     toggleMusic: () => saveSettings({ music: !settings.music }),
@@ -82,7 +98,7 @@ export function start() {
     again: () => {
       hud.show('over', false);
       newGame(null);
-      locked = false;
+      startLevel(true, { slide: false });
     },
   });
 
@@ -146,10 +162,14 @@ export function start() {
   }
 
   function newGame(saved) {
-    game = saved ?? new Game();
+    game = saved ?? new Game(debugSeed === null ? undefined : { seed: debugSeed });
     if (game.phase === 'cleared') game.nextLevel(); // the tab was closed on the level card
     timers = [];
     catching = 0;
+    swapQueue = null;
+    forgetHints();
+    hud.veil(false);
+    view.stopFlight();
     view.dying.length = view.falling.length = 0;
     view.flying = null;
     view.sync(game.board, game.scrollRow);
@@ -163,13 +183,147 @@ export function start() {
     audio.unlock();
     hud.startGame();
     playing = true;
-    locked = false;
+    prefetch();
     if (game.phase === 'nomoves') {
       locked = true;
       hud.revive(game, null);
-    } else if (shotsSeen < 3) {
-      hud.hint(matchMedia('(pointer: coarse)').matches ? 'Drag to aim, lift to shoot' : 'Move to aim, click to shoot', 7);
+    } else if (game.stats.shots === 0) startLevel(true, { slide: false }); // a new run: fly over it
+    else {
+      controlsHint();
+      unlock();
     }
+  }
+
+  // How to shoot, until the player has a few shots behind them.
+  function controlsHint() {
+    if (controlsShown || shotsSeen >= 3) return;
+    controlsShown = true;
+    hud.hint(matchMedia('(pointer: coarse)').matches ? 'Drag to aim, lift to shoot' : 'Move to aim, click to shoot', 7);
+  }
+
+  // A level has begun. If the run has gone back to another place (a new run after a long one),
+  // that changes first, under the veil. Then the camera flies over the level: the full tour
+  // when the place is new, a short one otherwise, none where motion is reduced.
+  function startLevel(full, { slide = true } = {}) {
+    locked = true;
+    const entry = ready.get(wantedPlace());
+    if (entry && entry.place !== place) return swapPlace(entry, () => startLevel(true, { slide }));
+    if (slide) {
+      view.sync(game.board, game.scrollRow);
+      view.setScroll(game.scrollRow, { intro: true });
+    }
+    const flying = view.flyover(game.board, {
+      count: full ? (game.levelRows >= 14 ? 3 : 2) : 1,
+      quick: !full,
+      prefer: (look) => teacher.isNew(specialName(look)),
+      onHold: (look) => teach(specialName(look)),
+      onDone: landed,
+    });
+    if (flying) hud.fly(true);
+    else landed();
+  }
+
+  function landed() {
+    hud.fly(false);
+    view.sync(game.board, game.scrollRow);
+    controlsHint();
+    unlock();
+  }
+
+  // ---- Teaching the specials ----
+
+  // Explains a special on the hint line, and rings the bubble it means as the line appears.
+  function teach(name) {
+    if (!teacher.isNew(name)) return;
+    teacher.wait(name);
+    hud.hint(LINES[name], 6, {
+      teach: true,
+      onShow: () => {
+        teacher.mark(name);
+        if (view.flight) return; // a close-up is already looking at it
+        const at = teacher.where(game, name);
+        if (at === 'hand') view.markLauncher();
+        else if (at) view.mark(cellX(at[0], at[1]), cellY(at[0]));
+      },
+    });
+  }
+
+  // Lines about specials that have not had their turn yet wait for the next sighting, which
+  // may never come in the level or run that follows.
+  function forgetHints() {
+    hud.dropHints();
+    teacher.waiting.clear();
+  }
+
+  function teachCheck() {
+    if (playing && !view.flight) for (const name of teacher.fresh(game)) teach(name);
+  }
+
+  // ---- Places ----
+
+  const wantedPlace = () => debugPlace ?? placeOf(game.level);
+
+  // Fetches a place's chunk and builds its scene ahead of time.
+  function prepare(id) {
+    if (id === place.id || ready.has(id) || preparing.has(id)) return;
+    preparing.add(id);
+    loadPlace(id)
+      .then((p) => view.preparePlace(p).then((group) => {
+        ready.set(id, { place: p, group });
+        syncPlace();
+      }))
+      .catch(console.error)
+      .finally(() => preparing.delete(id));
+  }
+
+  // Readies the place this level wants and the one the next stretch of levels wants, when the
+  // browser has a moment to spare (never in the middle of a fly-over).
+  function prefetch() {
+    const run = () => {
+      if (view.flight) return idle(run);
+      const next = game.level - ((game.level - 1) % LEVELS_PER_PLACE) + LEVELS_PER_PLACE;
+      prepare(wantedPlace());
+      prepare(debugPlace ?? placeOf(next));
+    };
+    idle(run);
+  }
+  const idle = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 2500 }) : setTimeout(fn, 1500));
+
+  function applyPlace(entry) {
+    ready.delete(entry.place.id); // its scene now belongs to the view, and is freed when it leaves
+    view.setPlace(entry.place, entry.group);
+    place = entry.place;
+    audio.setScore(place.music);
+    hud.theme(place.theme);
+    prefetch();
+  }
+
+  // Changes place under the veil, then carries on with `then`. A change already under way
+  // takes the extra `then` along instead of starting another.
+  function swapPlace(entry, then) {
+    if (swapQueue) return void swapQueue.push(then);
+    swapQueue = [then];
+    locked = true;
+    view.setAim(null);
+    hud.veil(true, entry.place.theme);
+    after(0.4, () => {
+      if (entry.place !== place) applyPlace(entry);
+      hud.veil(false);
+      after(0.35, () => {
+        const queue = swapQueue;
+        swapQueue = null;
+        for (const fn of queue) fn();
+      });
+    });
+  }
+
+  // Shows the place this level wants if it arrived late (a run continued in a later place),
+  // between shots. Level starts change place during the level card instead.
+  function syncPlace() {
+    const entry = ready.get(wantedPlace());
+    if (!entry || entry.place === place || swapping() || paused || view.flight) return;
+    if (playing && (locked || game.phase !== 'aim')) return;
+    swapPlace(entry, () => playing && unlock());
   }
 
   function setPaused(value) {
@@ -183,6 +337,7 @@ export function start() {
       audio.resume();
       last = performance.now();
       raf = requestAnimationFrame(loop);
+      syncPlace();
     }
   }
 
@@ -319,25 +474,38 @@ export function start() {
   }
 
   function unlock() {
-    if (game.phase !== 'aim' || catching > 0) return;
+    if (game.phase !== 'aim' || catching > 0 || swapping() || view.flight) return;
     locked = false;
     showAim();
+    teachCheck();
+    syncPlace();
   }
 
+  // The level card. When the next level is somewhere new, the veil comes down behind the card
+  // and the place changes under it.
   function levelCleared() {
     const level = game.level;
     audio.levelUp();
     pulse = 1.6;
-    hud.cleared(level, true);
+    forgetHints();
+    const entry = ready.get(debugPlace ?? placeOf(level + 1));
+    const moving = !!entry && entry.place !== place;
+    hud.cleared(level, true, moving ? entry.place.name : null);
+    if (moving) {
+      swapQueue = []; // holds off any other change of place until the card is gone
+      after(1.0, () => hud.veil(true, entry.place.theme));
+      after(1.45, () => applyPlace(entry));
+    }
     after(2.0, () => {
       hud.cleared(level, false);
       game.nextLevel();
+      if (moving) swapQueue = null;
+      hud.veil(false);
       view.sync(game.board, game.scrollRow);
-      view.setScroll(game.scrollRow, { intro: true });
       audio.scroll();
       showHand('set');
       afterChange();
-      locked = false;
+      startLevel(moving);
     });
   }
 
@@ -366,6 +534,12 @@ export function start() {
   };
 
   bindInput(canvas, {
+    // A press during the fly-over cuts it short, and goes no further.
+    press() {
+      if (!playing || paused || !view.flight) return false;
+      view.skipFlight();
+      return true;
+    },
     aim(px, py) {
       const a = aimAt(px, py);
       aiming = a !== null;
@@ -394,6 +568,7 @@ export function start() {
       const step = e.shiftKey ? 0.09 : 0.025;
       if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') setPaused(!paused);
       else if (paused) return;
+      else if (view.flight) view.skipFlight();
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         aiming = true;
         angle = clampAim(angle + (e.key === 'ArrowLeft' ? step : -step));
@@ -426,7 +601,8 @@ export function start() {
     raf = requestAnimationFrame(loop);
     const real = Math.min(100, now - last);
     last = now;
-    const dt = real / 1000;
+    const dt = frozen === null ? real / 1000 : 0;
+    if (frozen !== null) view.time = frozen;
     view.quality.frame(real);
     pulse *= Math.exp(-dt * 1.6);
     view.env.glow.value = 1 + pulse;
@@ -447,6 +623,8 @@ export function start() {
   }
 
   newGame(Game.load(store.get('run', null)));
+  if (debug && params.has('level')) jumpTo(Number(params.get('level')));
+  if (debugPlace) prepare(debugPlace);
   view.warmUp().catch(console.error).then(() => {
     view.frame(0);
     canvas.classList.add('on');
@@ -456,11 +634,32 @@ export function start() {
     performance.mark('bubbler-ready');
   });
 
+  // Debug: a new run that starts at the beginning of `level`.
+  function jumpTo(level) {
+    const g = new Game(debugSeed === null ? undefined : { seed: debugSeed });
+    g.level = Math.max(1, level) - 1;
+    g.phase = 'cleared';
+    newGame(g);
+    store.remove('run');
+  }
+
   if (debug) {
     // Handles for tests and for poking at the game from the console.
     window.__bubbler = {
       get game() { return game; },
-      view, hud, audio,
+      get place() { return place.id; },
+      view, hud, audio, teacher,
+      level(n) {
+        jumpTo(n);
+        if (playing) startLevel(true, { slide: false });
+      },
+      goPlace(id) {
+        debugPlace = id;
+        prepare(id);
+        syncPlace();
+      },
+      flyover() { startLevel(true, { slide: false }); },
+      freeze(t) { frozen = t; },
       fireAt(a) { angle = a; aiming = true; fire(); },
       // What a shot at this angle would do, without taking it.
       tryShot(a) {

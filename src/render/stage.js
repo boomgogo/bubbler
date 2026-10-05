@@ -42,6 +42,7 @@ export class Stage {
     this.group = new Group();
     this.path = null; // world-space polyline of the aim line
     this.pathLen = 0;
+    this.fade = 1; // the glowing strips skip the depth test, so they bow out while the camera roams
 
     // Launcher: two brass rings around the loaded bubble, the outer one turning slowly.
     this.brass = new ShaderMaterial({
@@ -95,7 +96,7 @@ export class Stage {
     this.failLine.position.set(0, FAIL_WORLD_Y, 0);
     this.failLine.material.uniforms.uColor.value.set('#ff5a3c');
     this.group.add(this.failLine);
-    const wallMaterial = glowMaterial('smoothstep(0.0, 0.12, vUv.y) * smoothstep(1.0, 0.75, vUv.y) * (1.0 - abs(vUv.x - 0.5) * 2.0)');
+    const wallMaterial = (this.wallMaterial = glowMaterial('smoothstep(0.0, 0.12, vUv.y) * smoothstep(1.0, 0.75, vUv.y) * (1.0 - abs(vUv.x - 0.5) * 2.0)'));
     wallMaterial.uniforms.uColor.value.set('#6fa8ff');
     wallMaterial.uniforms.uGain.value = 0.22;
     for (const side of [-1, 1]) {
@@ -172,13 +173,20 @@ export class Stage {
     this.danger = level;
   }
 
+  // 1 in play, 0 hides the walls, the fail line and the launcher's light on the water.
+  setFade(fade) {
+    this.fade = fade;
+  }
+
   update(time, unit) {
     this.gimbal.rotation.z = time * 0.4;
     this.gimbal.rotation.x = 1.2 + Math.sin(time * 0.7) * 0.12;
     this.launcher.position.y = LAUNCH_WORLD_Y + Math.sin(time * 1.3) * 0.035;
     const fail = this.failLine.material.uniforms;
     fail.uTime.value = time;
-    fail.uGain.value = 0.1 + (this.danger ?? 0) * (0.8 + 0.4 * Math.sin(time * 6));
+    fail.uGain.value = (0.1 + (this.danger ?? 0) * (0.8 + 0.4 * Math.sin(time * 6))) * this.fade;
+    this.wallMaterial.uniforms.uGain.value = 0.22 * this.fade;
+    this.pool.material.uniforms.uGain.value = 0.22 * this.fade;
     this.ghost.material.uniforms.uGain.value = 0.55 + 0.25 * Math.sin(time * 5);
     this.dotMaterial.uniforms.uUnit.value = unit;
 

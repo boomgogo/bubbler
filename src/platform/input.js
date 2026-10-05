@@ -1,10 +1,15 @@
 // Mouse, touch, pen and keyboard, reduced to a handful of callbacks.
 // A mouse aims by hovering and fires on click; a finger aims while it is down and fires on lift.
+// on.press() may claim a press before it aims (to skip the fly-over); that press then does nothing more.
 export function bindInput(canvas, on) {
   let held = null; // the pointer currently pressed on the canvas
 
   canvas.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (on.press?.()) {
+      held = null;
+      return;
+    }
     held = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
     canvas.setPointerCapture?.(e.pointerId);
     on.aim(e.clientX, e.clientY);

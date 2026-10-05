@@ -51,10 +51,27 @@ export class Quality {
     this.slideFrom = null; // frame time when the current run of slow frames began
     this.scalable = true; // false once shrinking has been shown not to help on this tier
     this.ceiling = locked ? tierName : 'high';
+    this.held = null; // what was learned before the fly-over began, while it runs
   }
 
   get pixelRatio() {
     return Math.min(devicePixelRatio, this.tier.dpr) * this.scale;
+  }
+
+  // During the fly-over the frame cost is the camera's, not the game's: close-ups fill the
+  // screen with glass. Resolution may be trimmed to keep the flight smooth, but the tier stays
+  // put, and on landing everything goes back to how it was.
+  hold() {
+    this.held ??= { scale: this.scale, scalable: this.scalable, slideFrom: this.slideFrom, ema: this.ema };
+  }
+
+  release() {
+    const held = this.held;
+    if (!held) return;
+    this.held = null;
+    const rescale = held.scale !== this.scale;
+    Object.assign(this, held, { good: 0, clock: 0 });
+    if (rescale) this.onScale();
   }
 
   setTier(name, locked = this.locked) {
@@ -93,7 +110,7 @@ export class Quality {
           this.scale = 1;
         }
         this.onScale();
-      } else if (!this.locked && this.tier.name !== 'low') {
+      } else if (!this.locked && !this.held && this.tier.name !== 'low') {
         const lower = ORDER[ORDER.indexOf(this.tier.name) - 1];
         this.ceiling = lower;
         this.setTier(lower);
@@ -105,7 +122,7 @@ export class Quality {
         this.scale = Math.min(1, this.scale + 0.1);
         this.good = 0;
         this.onScale();
-      } else if (!this.locked && this.scale === 1 && this.good >= 8) {
+      } else if (!this.locked && !this.held && this.scale === 1 && this.good >= 8) {
         const i = ORDER.indexOf(this.tier.name);
         if (i < ORDER.indexOf(this.ceiling)) this.setTier(ORDER[i + 1]);
         this.good = 0;

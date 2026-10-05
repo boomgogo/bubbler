@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { COLS, KIND, LAUNCH_Y, FAIL_ROW, GEMS, START_MOVES, MOVES_PER_LEVEL, levelParams } from '../../src/config.js';
+import { COLS, KIND, LAUNCH_Y, FAIL_ROW, GEMS, START_MOVES, MOVES_PER_LEVEL, LEVELS_PER_PLACE, PLACES, levelParams, placeOf } from '../../src/config.js';
 import { rowLen, cellX, cellY, neighbor, forNeighbors, hexDist, inGrid } from '../../src/core/grid.js';
-import { Board, makeBubble } from '../../src/core/board.js';
+import { Board, makeBubble, specialName } from '../../src/core/board.js';
 import { traceShot, tracePierce } from '../../src/core/shot.js';
 import { applyShot } from '../../src/core/rules.js';
 import { generateLevel } from '../../src/core/levelgen.js';
@@ -171,6 +171,33 @@ test('pierce: stops after its reach', () => {
   const t = tracePierce(b, origin.x, origin.y, UP);
   assert.ok(t.cells.length >= 6 && t.cells.length <= 24, `took ${t.cells.length}`);
   assert.ok(t.len - t.contactLen <= 6.1);
+});
+
+test('board: names the specials, and finds the lowest of each kind in a band of rows', () => {
+  assert.equal(specialName(col(0)), null);
+  assert.equal(specialName(col(0, 1)), 'mist');
+  assert.equal(specialName(makeBubble(KIND.COMET, 2)), 'comet');
+  assert.equal(specialName(makeBubble(KIND.NOVA)), 'nova');
+  assert.equal(specialName(makeBubble(KIND.OBSIDIAN)), 'obsidian');
+  assert.equal(specialName(null), null);
+  const b = board(`
+    A a a a a a a a a a
+     a ~b a a a a a a a
+    a a a # a a a a a a
+     a a * a a a a a a
+    a a a a A a a a a a`);
+  assert.deepEqual(b.firstOfKinds(0, 10), { comet: [4, 4], obsidian: [2, 3], mist: [1, 1], nova: [3, 2] });
+  assert.deepEqual(b.firstOfKinds(0, 1), { comet: [0, 0], mist: [1, 1] });
+  assert.deepEqual(b.firstOfKinds(3, 3), { nova: [3, 2] });
+});
+
+test('places: a few levels each, in order, starting over after the last', () => {
+  assert.equal(placeOf(1), PLACES[0]);
+  assert.equal(placeOf(LEVELS_PER_PLACE), PLACES[0]);
+  assert.equal(placeOf(LEVELS_PER_PLACE + 1), PLACES[1 % PLACES.length]);
+  assert.equal(placeOf(LEVELS_PER_PLACE * PLACES.length + 1), PLACES[0]);
+  assert.equal(placeOf(4), 'fjord');
+  for (let level = 1; level < 40; level++) assert.ok(PLACES.includes(placeOf(level)));
 });
 
 test('levelgen: same seed, same level; everything hangs from the ceiling', () => {

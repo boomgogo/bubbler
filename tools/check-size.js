@@ -1,10 +1,11 @@
-// Fails when the files needed before Play can be tapped exceed the download budget.
+// Fails when the files needed before Play can be tapped exceed the download budget, or when a
+// chunk loaded later (a place, the bloom pass) grows past its own.
 // Sizes are brotli-compressed, which is what Cloudflare serves.
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { brotliCompressSync, constants } from 'node:zlib';
 import { join } from 'node:path';
 
-const BUDGET = { html: 10_000, js: 250_000 };
+const BUDGET = { html: 10_000, js: 250_000, lazy: 20_000 };
 const dist = join(import.meta.dirname, '..', 'dist');
 const br = (buf) =>
   brotliCompressSync(buf, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } }).length;
@@ -22,6 +23,13 @@ for (const ref of refs) {
   rows.push([ref, buf.length, size, null]);
 }
 rows.push(['scripts and styles, total', null, js, BUDGET.js]);
+// Everything else is fetched after Play, one chunk at a time.
+for (const file of readdirSync(join(dist, 'assets'))) {
+  const ref = `/assets/${file}`;
+  if (refs.includes(ref) || !file.endsWith('.js')) continue;
+  const buf = readFileSync(join(dist, ref));
+  rows.push([`${ref} (after Play)`, buf.length, br(buf), BUDGET.lazy]);
+}
 
 const kb = (n) => (n == null ? '' : (n / 1000).toFixed(1) + ' KB');
 let failed = false;
@@ -36,6 +44,6 @@ for (const [name, raw, size, budget] of rows) {
   );
 }
 if (failed) {
-  console.error('\nCritical path is over budget.');
+  console.error('\nOver budget.');
   process.exit(1);
 }
