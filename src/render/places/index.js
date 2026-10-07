@@ -5,6 +5,9 @@ import lake from './lake.js';
 const LOADERS = {
   lake: () => Promise.resolve({ default: lake }),
   fjord: () => import('./fjord.js'),
+  marsh: () => import('./marsh.js'),
+  lagoon: () => import('./lagoon.js'),
+  harbour: () => import('./harbour.js'),
 };
 
 const loading = new Map();

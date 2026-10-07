@@ -13,6 +13,8 @@
     "check:size": "node tools/check-size.js",
     "check:nan": "node tools/check-nan.js",
     "perf": "node tools/perf.js",
+    "music": "node tools/music.js",
+    "place-cost": "node tools/place-cost.js",
     "deploy": "node tools/predeploy.js && vite build && node tools/check-size.js && wrangler deploy"
   },
   "dependencies": {

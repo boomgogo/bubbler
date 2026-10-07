@@ -226,8 +226,10 @@ const midiHz = (n) => 440 * 2 ** ((n - 69) / 12);
 // surf), and the instruments the score plays its bars on. Works on any audio context, so a
 // score can also be rendered offline.
 //
-// A score is { bpm, beats, level, echo, air, bar(play, index, time) }. bar() books one bar of
-// notes starting at audio time `time`, through `play`: midi numbers in, instruments out.
+// A score is { bpm, beats, level, echo, air, voices, bar(play, index, time) }. bar() books one
+// bar of notes starting at audio time `time`, through `play`: midi numbers in, instruments out.
+// voices(tools), if given, returns instruments of the score's own, which join `play`; tools has
+// the building blocks below, so a place's chunk can carry a sound the game itself never needs.
 export class Band {
   constructor(ctx, dest, noise, score, fadeIn = 0.4) {
     this.ctx = ctx;
@@ -262,6 +264,7 @@ export class Band {
 
     if (score.air) this.#air(score.air);
     this.play = this.#instruments();
+    if (score.voices) Object.assign(this.play, score.voices(this.tools));
   }
 
   // Books every bar that starts before `until`. With the music off it only keeps count.
@@ -347,6 +350,7 @@ export class Band {
       g.gain.setTargetAtTime(0, at + Math.max(attack, dur), release / 3);
       return at + Math.max(attack, dur) + release;
     };
+    this.tools = { ctx, out, strike, hold, noise: band.noise, hz: midiHz };
 
     return {
       hz: midiHz,

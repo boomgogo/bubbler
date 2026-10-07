@@ -196,7 +196,7 @@ test('places: a few levels each, in order, starting over after the last', () => 
   assert.equal(placeOf(LEVELS_PER_PLACE), PLACES[0]);
   assert.equal(placeOf(LEVELS_PER_PLACE + 1), PLACES[1 % PLACES.length]);
   assert.equal(placeOf(LEVELS_PER_PLACE * PLACES.length + 1), PLACES[0]);
-  assert.equal(placeOf(4), 'fjord');
+  assert.deepEqual([1, 4, 7, 10, 13, 16].map(placeOf), ['lake', 'fjord', 'marsh', 'lagoon', 'harbour', 'lake']);
   for (let level = 1; level < 40; level++) assert.ok(PLACES.includes(placeOf(level)));
 });
 

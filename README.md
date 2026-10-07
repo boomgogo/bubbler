@@ -2,8 +2,9 @@
 
 a modern bubble shooter game
 
-Glass bubbles over a lantern-lit lake, rendered in 3D with three.js. Every few levels the game moves on to
-a new place, each with its own music. Open source, no ads, yours to adapt.
+Glass bubbles over a lantern-lit lake, rendered in 3D with three.js. Every three levels the game moves on to
+a new place, each with its own music: Lantern Lake, Aurora Fjord, Firefly Marsh, Glow Lagoon and Neon Harbour,
+then round again. Open source, no ads, yours to adapt.
 
 
 ## Setup and run
@@ -14,7 +15,8 @@ npm run dev
 ```
 
 Add `?debug` to the URL for a frame-rate and quality readout, and a `__bubbler` handle in the console.
-With `?debug` you can also add `&level=7` to start a run at level 7, `&place=fjord` to play in a given place,
+With `?debug` you can also add `&level=7` to start a run at level 7, `&place=fjord` to play in a given place
+(`lake`, `fjord`, `marsh`, `lagoon` or `harbour`),
 and `&seed=123` for the same boards every time. The console handle has `level(n)`, `goPlace(id)`,
 `flyover()` and `freeze(t)` (pins the clock, for screenshots).
 
@@ -41,7 +43,9 @@ Keyboard: arrows aim, space fires, S swaps, 1 and 2 use the boosts, Esc pauses.
 | `npm run tune` | Headless bots play whole runs and print how the game pays out |
 | `npm run check:size` | Fails if the files needed before Play exceed the download budget, or a chunk loaded later exceeds its own |
 | `npm run check:nan` | Fails if any place, or the board in front of it, renders a NaN pixel, which blanks the screen on the high tier once the bloom spreads it (built site, needs Chrome) |
-| `npm run perf` | Load time, fly-over and play frame rate on the built site, with network and CPU throttled (needs Chrome); `-- --place fjord` measures another place |
+| `npm run perf` | Load time, fly-over and play frame rate on the built site, with network and CPU throttled (needs Chrome); `-- --place fjord` measures another place, `-- --tier mid` locks the quality tier so places compare like for like, `-- --profile phone` runs one profile |
+| `npm run place-cost` | What each place costs to draw, all measured in one page so they compare fairly; `-- --tier low`, `-- --phone`, `-- --software` (built site, needs Chrome) |
+| `npm run music` | Renders each place's music offline and prints its loudness and notes a minute; `-- --out dir` also writes WAVs to listen to (needs Chrome) |
 | `npm run deploy` | Build, size check, `wrangler deploy` |
 
 ## Where things are

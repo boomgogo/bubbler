@@ -1,7 +1,9 @@
 // Measures the two things the spec asks for, on the built site in ./dist:
 //   1. how long until Play can be tapped, on a throttled network and CPU
 //   2. frame rate during play, and during the fly-over that opens a run
-// Usage: npm run build && node tools/perf.js [--runs 5] [--play 20] [--software] [--place fjord]
+// Usage: npm run build && node tools/perf.js [--runs 5] [--play 20] [--software] [--place fjord] [--tier mid]
+// --tier locks the quality tier, as the pause menu does, so places can be compared like for like.
+// --profile phone (or pc) runs one of the two profiles only.
 // --software renders on the CPU (SwiftShader): far slower than any real GPU, which makes it a
 // worst case for checking that the game steps its quality down instead of crawling.
 // Needs Google Chrome installed. Note the limits: CPU throttling does not imitate a weak
@@ -17,6 +19,8 @@ const arg = (name, fallback) => {
 const RUNS = arg('runs', 5);
 const PLAY_SECONDS = arg('play', 20);
 const PLACE = process.argv.includes('--place') ? process.argv[process.argv.indexOf('--place') + 1] : null;
+const TIER = process.argv.includes('--tier') ? process.argv[process.argv.indexOf('--tier') + 1] : null;
+const PROFILE = process.argv.includes('--profile') ? process.argv[process.argv.indexOf('--profile') + 1] : null;
 // Deliberately below typical broadband and 4G: 10 Mbit/s down, 100 ms round trip.
 const NETWORK = { offline: false, downloadThroughput: (10e6 / 8), uploadThroughput: (5e6 / 8), latency: 100 };
 const PROFILES = [
@@ -35,7 +39,7 @@ const launch = () =>
     args: SOFTWARE ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : ['--enable-gpu', '--ignore-gpu-blocklist'],
   });
 
-for (const profile of PROFILES) {
+for (const profile of PROFILES.filter((p) => !PROFILE || p.name === PROFILE)) {
   const { name, cpu, ...contextOptions } = profile;
   const loads = [];
   let page;
@@ -45,6 +49,7 @@ for (const profile of PROFILES) {
     browser = await launch();
     const context = await browser.newContext(contextOptions);
     page = await context.newPage();
+    if (TIER) await page.addInitScript((quality) => localStorage.setItem('bubbler:settings', JSON.stringify({ quality })), TIER);
     const cdp = await context.newCDPSession(page);
     await cdp.send('Network.enable');
     await cdp.send('Network.emulateNetworkConditions', NETWORK);
@@ -58,7 +63,7 @@ for (const profile of PROFILES) {
     })));
     if (run < RUNS - 1) await browser.close();
   }
-  console.log(`\n=== ${name}: ${profile.viewport.width}x${profile.viewport.height}, CPU slowed ${cpu}x, 10 Mbit/s, 100 ms${SOFTWARE ? ', software rendering' : ''}${PLACE ? `, ${PLACE}` : ''} ===`);
+  console.log(`\n=== ${name}: ${profile.viewport.width}x${profile.viewport.height}, CPU slowed ${cpu}x, 10 Mbit/s, 100 ms${SOFTWARE ? ', software rendering' : ''}${PLACE ? `, ${PLACE}` : ''}${TIER ? `, ${TIER} tier` : ''} ===`);
   console.log(`first paint      ${Math.round(median(loads.map((l) => l.paint)))} ms   (median of ${RUNS})`);
   console.log(`Play can be tapped  ${Math.round(median(loads.map((l) => l.ready)))} ms   (all runs: ${loads.map((l) => Math.round(l.ready)).join(', ')})`);
   console.log(`downloaded       ${(median(loads.map((l) => l.bytes)) / 1000).toFixed(1)} KB`);
@@ -106,6 +111,36 @@ for (const profile of PROFILES) {
   const result = await page.evaluate(() => ({ frames: window.__frames.slice(30), stats: window.__bubbler.view.stats, shots: window.__bubbler.game.stats.shots }));
   console.log(`frame rate       ${summary(result.frames)}`);
   console.log(`settled on       tier ${result.stats.tier}, resolution x${result.stats.scale.toFixed(1)}, pixel ratio ${result.stats.pixelRatio.toFixed(2)}, ${result.stats.calls} draw calls`);
+
+  // What one frame costs once the GPU has to finish it: the same frame drawn over and over, each
+  // time waiting on a pixel read. Frame rate hides this when a frame fits in its 16.7 ms. From
+  // one browser launch to the next it can differ by half; to compare places, use place-cost.js.
+  const gpu = await page.evaluate(() => {
+    const v = window.__bubbler.view;
+    const r = v.renderer;
+    const gl = r.getContext();
+    const pixel = new Uint8Array(4);
+    const frame = () => {
+      if (v.quality.tier.cubeEvery) v.env.captureFace(r);
+      r.setRenderTarget(null);
+      if (v.post) v.post.render();
+      else {
+        r.clear();
+        r.render(v.env.scene, v.camera);
+        r.render(v.scene, v.camera);
+      }
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+    };
+    for (let i = 0; i < 10; i++) frame();
+    const times = [];
+    for (let i = 0; i < 60; i++) {
+      const t0 = performance.now();
+      frame();
+      times.push(performance.now() - t0);
+    }
+    return times.sort((a, b) => a - b)[30];
+  });
+  console.log(`frame, finished  ${gpu.toFixed(2)} ms median, on tier ${result.stats.tier}`);
   await browser.close();
 }
 server.close();
