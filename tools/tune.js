@@ -1,8 +1,9 @@
 // Plays whole runs with the headless players and prints how the game pays out.
-//   node tools/tune.js [--games 40] [--revive]
+//   node tools/tune.js [--games 40] [--revive] [--only expert]
+// The expert always takes a Second Wind and uses the boosts, as the autoplayer does.
 import { Game } from '../src/core/game.js';
 import { createRng } from '../src/core/rng.js';
-import { randomPolicy, greedyPolicy, casualPolicy } from './sim-bot.js';
+import { randomPolicy, greedyPolicy, casualPolicy, expertPolicy, takeTurn } from './sim-bot.js';
 
 const arg = (name, fallback) => {
   const i = process.argv.indexOf('--' + name);
@@ -10,13 +11,14 @@ const arg = (name, fallback) => {
 };
 const GAMES = Number(arg('games', 40));
 const REVIVE = process.argv.includes('--revive');
+const ONLY = arg('only', null);
 
 const BUCKETS = ['Nothing', '1 to 5', '6 to 15', '16 to 40', 'More than 40'];
 const bucket = (n) => (n === 0 ? 0 : n <= 5 ? 1 : n <= 15 ? 2 : n <= 40 ? 3 : 4);
 const median = (a) => (a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)] : NaN);
 const mean = (a) => a.reduce((s, x) => s + x, 0) / (a.length || 1);
 
-function play(policy, seed) {
+function play(policy, seed, revive = REVIVE) {
   const game = new Game({ seed });
   const rng = createRng(seed ^ 0x5bd1e995);
   const out = { buckets: [0, 0, 0, 0, 0], levels: {}, specials: 0, gifts: 0 };
@@ -32,11 +34,11 @@ function play(policy, seed) {
       game.nextLevel();
       startLevel();
     } else if (game.phase === 'nomoves') {
-      if (!(REVIVE && game.revive())) game.endRun();
+      if (!(revive && game.revive())) game.endRun();
     } else {
       const choice = policy(game, rng);
-      if (choice.swap) game.swap();
-      const res = game.fire(choice.angle);
+      const res = takeTurn(game, choice);
+      if (!res) continue; // a boost
       out.buckets[bucket(res.popped + res.dropped)]++;
       if (res.special) out.specials++;
       out.gifts += res.gifts.reduce((s, g) => s + g.amount, 0);
@@ -46,15 +48,16 @@ function play(policy, seed) {
   return Object.assign(out, { level: game.level, score: game.score, shots: game.stats.shots, best: game.stats.best, reason: game.overReason });
 }
 
-for (const [name, policy] of [['random', randomPolicy], ['casual', casualPolicy], ['greedy', (game) => greedyPolicy(game)]]) {
+const POLICIES = [['random', randomPolicy], ['casual', casualPolicy], ['greedy', (game) => greedyPolicy(game)], ['expert', expertPolicy]];
+for (const [name, policy] of POLICIES.filter(([name]) => !ONLY || name === ONLY)) {
   const t0 = performance.now();
   const runs = [];
-  for (let g = 0; g < GAMES; g++) runs.push(play(policy, 1000 + g));
+  for (let g = 0; g < GAMES; g++) runs.push(play(policy, 1000 + g, REVIVE || name === 'expert'));
   const total = [0, 0, 0, 0, 0];
   for (const r of runs) r.buckets.forEach((n, i) => (total[i] += n));
   const shots = total.reduce((s, x) => s + x, 0);
 
-  console.log(`\n=== ${name}: ${GAMES} runs${REVIVE ? ', Second Wind used' : ''} (${((performance.now() - t0) / 1000).toFixed(1)} s) ===`);
+  console.log(`\n=== ${name}: ${GAMES} runs${REVIVE || name === 'expert' ? ', Second Wind used' : ''} (${((performance.now() - t0) / 1000).toFixed(1)} s) ===`);
   console.log('One shot removes');
   BUCKETS.forEach((label, i) => console.log(' ', label.padEnd(16), ((100 * total[i]) / shots).toFixed(1).padStart(5) + '%'));
   const ends = {};

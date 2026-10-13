@@ -153,3 +153,6 @@ ref/
 
 # Wrangler
 .wrangler/
+
+# Gameplay videos made by tools/record.js
+recordings/

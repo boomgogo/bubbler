@@ -40,7 +40,10 @@ Keyboard: arrows aim, space fires, S swaps, 1 and 2 use the boosts, Esc pauses.
 | `npm run dev` | Dev server |
 | `npm run build` | Production build into `dist/` |
 | `npm test` | Rule tests (`tools/test`) |
-| `npm run tune` | Headless bots play whole runs and print how the game pays out |
+| `npm run tune` | Headless bots play whole runs and print how the game pays out; `-- --only expert` for the autoplayer's bot |
+| `npm run autoplay` | Plays 400 seeds with the autoplayer's bot in Node and ranks the runs, to pick one to record; `-- --seeds 100` |
+| `npm run record -- youtube --seed N` | Records one whole run in Chrome, frame by frame, played by the autoplayer with a mouse: video, sound and an event log in `recordings/youtube/` (built site; needs Chrome and ffmpeg). `pilot` records the first 90 s and checks timing; `watch` plays in a visible window in real time |
+| `npm run cut -- youtube\|short\|x` | From a recorded run: YouTube text with chapters and thumbnail stills; a YouTube Short (re-recorded in a phone layout, by touch); a square video for X |
 | `npm run check:size` | Fails if the files needed before Play exceed the download budget, or a chunk loaded later exceeds its own |
 | `npm run check:nan` | Fails if any place, or the board in front of it, renders a NaN pixel, which blanks the screen on the high tier once the bloom spreads it (built site, needs Chrome) |
 | `npm run perf` | Load time, fly-over and play frame rate on the built site, with network and CPU throttled (needs Chrome); `-- --place fjord` measures another place, `-- --tier mid` locks the quality tier so places compare like for like, `-- --profile phone` runs one profile |
@@ -61,8 +64,24 @@ Keyboard: arrows aim, space fires, S swaps, 1 and 2 use the boosts, Esc pauses.
 | `index.html` | Loading screen and all CSS, inline so it paints before any script |
 | `site.config.js` | `REPO_URL` for the "Fork me on GitHub" links |
 | `tools/` | Tests, tuning bots, size check, performance harness |
+| `tools/sim-bot.js`, `human.js`, `record.js` | The autoplayer: the expert bot (it sees only what a player sees), the hand that carries out its moves at a person's pace, and the frame-by-frame recorder (`record-clock.js` is the clock it injects) |
 
 All art and sound are generated in code: there are no image, model or audio files.
+
+## Recording gameplay
+
+```bash
+npm run build
+npm run autoplay                          # pick a seed from the ranking
+npm run record -- pilot --seed N          # 90 s, to try the settings first
+npm run record -- youtube --seed N        # the whole run: hours of rendering, unattended
+npm run cut -- youtube && npm run cut -- short && npm run cut -- x
+```
+
+The recorder owns the page's clock, so every frame is drawn in full whatever the machine, and the sound is
+rendered in step with the pictures. Each recording saves its checks in `run.json`: time per frame, sound
+against picture, and that every level was played in its own place. Videos go in `recordings/`, which git
+ignores.
 
 ## Initial setup
 

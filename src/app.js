@@ -277,12 +277,15 @@ export function start() {
   }
 
   // Readies the place this level wants and the one the next stretch of levels wants, when the
-  // browser has a moment to spare (never in the middle of a fly-over).
+  // browser has a moment to spare (never in the middle of a fly-over). While the level card is up
+  // the level counted from is the one about to start: the place changes under the card, before
+  // nextLevel(), and counting from the old level readied the place just left instead of the next.
   function prefetch() {
     const run = () => {
       if (view.flight) return idle(run);
-      const next = game.level - ((game.level - 1) % LEVELS_PER_PLACE) + LEVELS_PER_PLACE;
-      prepare(wantedPlace());
+      const level = game.level + (game.phase === 'cleared' ? 1 : 0);
+      const next = level - ((level - 1) % LEVELS_PER_PLACE) + LEVELS_PER_PLACE;
+      prepare(debugPlace ?? placeOf(level));
       prepare(debugPlace ?? placeOf(next));
     };
     idle(run);
@@ -648,6 +651,9 @@ export function start() {
     window.__bubbler = {
       get game() { return game; },
       get place() { return place.id; },
+      // For the autoplayer: whether a shot would be taken now, and the angle the pointer gives.
+      get ready() { return playing && !paused && !locked && game.phase === 'aim'; },
+      get aim() { return aiming ? clampAim(angle) : null; },
       view, hud, audio, teacher,
       level(n) {
         jumpTo(n);
