@@ -155,39 +155,53 @@ offers three buttons:
 - **When the room closes** (left, ended, lost, kicked, or opened in another tab), a card says why. **Back to
   my game** returns to the solo run. The race run stays saved, and comes back if you rejoin the same race.
 
-### Fairness: the same bubbles for everyone (`src/core/game.js`)
+### Fairness: the same bubbles for everyone (`src/core/game.js`), done
 
-The boards already match. The change is to make the hand match too.
+The boards already matched. This change makes the deal match too. It is built and tested (option 2 of the
+two below).
 
 - **The colour of the n-th bubble dealt in a level is set by the seed, the level and n.** It no longer
   depends on how you played.
-  - At each level start, `#startLevel` makes the level's **queue** from `createRng(mixSeed(seed, 7919 +
-    level))`.
-  - The queue runs today's rule, a random colour unless one has waited `DROUGHT` deals, over every colour
-    in the level, Mist-hidden ones included.
-- **When the queued colour isn't one you can match now** (you cleared it, or it's still under Mist), it is
-  swapped for one that is.
-  - The swap is picked by integer maths, `colors[mixSeed(mixSeed(seed, level), n) % colors.length]`, so it
-    is the same in every browser.
-  - This keeps today's promise: you're never dealt a colour you can't play.
-  - `#refreshHand` uses the same swap.
-- **Each level starts with a fresh hand**, queue items 0 and 1. The old hand no longer carries over.
-  Specials that were caught or bought still carry over, since they were earned.
-- **What it gives:** every player starts every level with the same board and the same two bubbles. After
-  that, they're dealt the same colour on the same deal unless their boards have come to differ in that
-  colour. Moves, gems and score carry over as now: they are the record of how you played.
-- **The saved run:**
-  - It goes to `v: 2`, which saves `dealt` (n) and the level's colour set in place of the random stream's
-    state.
-  - `Game.load` still reads `v: 1`. Such a run carries on, and the new rule takes over from its next
-    bubble.
-- **Applied to solo play too.** One rule set is simpler than two, and the race is then exactly the game you
-  practise alone.
-  - The cost: a given seed now plays differently. Seed 177's run from plan 2 is no longer reproducible.
-    The videos are made; a new recording would need a new run search.
-  - `tools/test/autoplay.test.js` (it sets `game.deal.state`) is changed to match.
-  - `npm run tune` is run before and after, to check that the difficulty curve holds. Today the median is
-    level 22 over 400 seeds for the expert bot.
+  - At each level start, `#startLevel` opens the level's **queue**, drawn from `createRng(mixSeed(seed, 7919
+    + level))`.
+  - The queue runs the old rule, a random colour unless one has waited `DROUGHT` places, over every colour
+    in the level, Mist-hidden ones included (`Board.allColors()`).
+- **When the queued colour isn't one you can match now** (you cleared it, or it's still under Mist), a
+  stand-in is dealt instead.
+  - The stand-in is `colors[mixSeed(mixSeed(seed, 7919 + level), n) % colors.length]`. That is integer
+    maths only, so it is the same in every browser.
+  - This keeps the old promise: you're never dealt a colour you can't play.
+  - `#refreshHand` picks its stand-ins the same way, numbered down from −1 so they never meet a deal's.
+- **The hand carries over between levels**, as before. Every player starts a level with the same board, and
+  is dealt the same queue from its first bubble. Only the two bubbles carried in from the last level differ,
+  and they come from how you played, like caught specials.
+- **What it gives:** players are dealt the same colour on the same deal of a level unless their boards
+  offer different colours at that moment. Moves, gems and score carry over as before.
+  - A test with two players aiming differently: the deals matched 183 times out of 183 where the boards
+    offered the same colours. Under the old rule the same check matched only 86 of 189.
+- **The saved run** is now `v: 2`, which saves `palette`, `dealt` and `fixes` in place of the random
+  stream's state.
+  - `Game.load` still reads `v: 1`. Such a run deals from the start of its level's queue.
+- **It applies to solo play too.** One rule set is simpler than two, and the race is then exactly the game
+  you practise alone.
+  - The cost: a given seed now plays differently. Seed 177's run from plan 2 no longer reproduces. The
+    videos are made; a new recording would need a new run search.
+
+**Why not a fresh hand at each level start?** I measured both options with the tuning bots, each on the
+same seeds under the old rule and the new one.
+- **A fresh hand made the game easier.** The greedy bot reached +0.44 levels further on average (95% range
+  +0.14 to +0.74), with scores up about 7%. The queue alone changed nothing measurable (+0.06, −0.25 to
+  +0.35).
+- **The rule as built changes no bot's difficulty measurably:**
+
+| Bot (seeds) | Average level, old → new | Difference (95% range) | Average score |
+|---|---|---|---|
+| Greedy (400) | 18.1 → 18.1 | 0.0 (−0.3 to +0.3) | +0.9%, within noise |
+| Casual (400) | 10.1 → 10.3 | +0.2 (−0.1 to +0.4) | +5.5%, within noise |
+| Expert (200) | 22.0 → 22.0 | 0.0 (−0.5 to +0.5) | −0.5%, within noise |
+
+Second Winds, gem gifts and shots that remove nothing are unchanged too. One run to the next varies by
+about 3 levels for the same bot.
 
 ### What goes where in the room
 
@@ -322,13 +336,12 @@ The boards already match. The change is to make the hand match too.
 ### Tests
 
 **Node** (`tools/test/race.test.js`):
-- **Different shots, same start:** two games with one seed, played through a level with different shots,
-  start the next level with identical boards and hands. That holds for levels 1–30.
-- **Same deal while colours match:** the n-th bubble is the same colour in both games whenever both boards
-  can still match it.
-- **The promise holds:** a dealt bubble is always a colour on the board, as `core.test.js` checks today.
-- **Save and load:** a game reloaded from `serialize()` mid-level deals what the original deals. A `v: 1`
-  save loads and plays on.
+- **Done, in `core.test.js`:**
+  - *one seed deals everyone the same colours, however they play*: two players who aim differently, through
+    16 levels;
+  - *a run saved before the deal queue still loads and plays on*;
+  - the existing tests that a dealt bubble is always a colour on the board, and that a run reloaded from
+    `serialize()` mid-run plays on exactly as the original.
 - **The watcher's replay:** method replay plus `serialize()` matches the sender's state over 500 shots from
   `sim-bot`. That covers the same-engine path; across engines, the browser test covers it.
 - **The log reader:**
@@ -377,8 +390,7 @@ The boards already match. The change is to make the hand match too.
 ## Order of work
 
 1. **The Maize.Live links.** Small and independent.
-2. **The per-level queue and hand** in `game.js`, with the Node fairness tests. Run `npm run tune` before
-   and after, and fix `autoplay.test.js`.
+2. **The per-level deal queue** in `game.js`, with the Node fairness tests and the difficulty check. Done.
 3. **The seat in `app.js`** (`watching`, the slot, the returned API).
    - Solo play must behave exactly as before. `npm run record -- pilot` on a fresh seed checks it: the
      recorder compares every turn against the Node prediction.
@@ -391,8 +403,8 @@ The boards already match. The change is to make the hand match too.
 
 ## Choices I made that you may want to change
 
-- **The deal rule applies to solo play too.** The other way keeps old seeds as they were, at the cost of two
-  rule sets.
+- **The deal rule applies to solo play too** (built). The other way keeps old seeds as they were, at the cost
+  of two rule sets.
 - **No looking ahead while your run is live.** The other way is to let anyone watch anyone, and trust
   friends not to study the next level.
 - **Ranked by score,** with the level beside it. The other way is level first, then score.

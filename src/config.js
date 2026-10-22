@@ -27,7 +27,7 @@ export const STREAK_CAP = 10;
 export const NOVA_RADIUS = 2; // cells
 export const PIERCE_LEN = 6; // how far a Comet shot ploughs on after first contact
 export const PIERCE_R = 0.62;
-export const DROUGHT = 5; // a colour on the board is dealt at least this often
+export const DROUGHT = 5; // each colour of a level comes up in its deal queue at least this often
 
 export const GEMS = {
   start: 3,

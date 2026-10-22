@@ -112,6 +112,13 @@ export class Board {
     return out;
   }
 
+  // Every colour on the board, Mist-hidden ones included.
+  allColors() {
+    const seen = new Set();
+    this.each((r, c, b) => b.c >= 0 && seen.add(b.c));
+    return [...seen].sort((a, b) => a - b);
+  }
+
   // Colours a shot could match. Hidden colours only count when nothing else is left.
   colors() {
     const seen = new Set();

@@ -254,6 +254,59 @@ test('game: a run replays exactly from its seed, and survives save and load', ()
   assert.equal(resumed.level, a.level);
 });
 
+test('game: one seed deals everyone the same colours, however they play', () => {
+  // Per level, each bubble dealt and the colours the board offered when it was dealt.
+  const deals = (g, steps) => {
+    const out = {};
+    for (let i = 0; i < 300 && g.phase !== 'over'; i++) {
+      if (g.phase === 'cleared') g.nextLevel();
+      else if (g.phase === 'nomoves') {
+        g.gems = g.reviveCost;
+        g.revive();
+      } else {
+        const pick = greedyPolicy(g, steps);
+        if (pick.swap) g.swap();
+        const res = g.fire(pick.angle);
+        if (!res.special && g.phase !== 'cleared') (out[g.level] ??= []).push({ c: g.hand[1].c, offer: g.board.colors().join() });
+      }
+    }
+    return out;
+  };
+  // Two players who aim differently, and so soon have different boards.
+  const a = deals(new Game({ seed: 21 }), 40);
+  const b = deals(new Game({ seed: 21 }), 23);
+  let compared = 0;
+  let differ = 0;
+  for (const level of Object.keys(a)) {
+    for (let n = 0; n < Math.min(a[level].length, b[level]?.length ?? 0); n++) {
+      const [x, y] = [a[level][n], b[level][n]];
+      if (x.offer !== y.offer) {
+        differ++;
+        continue;
+      }
+      compared++;
+      assert.equal(x.c, y.c, `level ${level}, bubble ${n}`);
+    }
+  }
+  assert.ok(Object.keys(a).length >= 4 && compared >= 100, 'several levels, many bubbles');
+  assert.ok(differ > 0, 'the boards did come to differ');
+});
+
+test('game: a run saved before the deal queue still loads and plays on', () => {
+  const g = new Game({ seed: 8 });
+  for (let i = 0; i < 6; i++) g.fire(0.5 + i * 0.3);
+  const { palette, dealt, fixes, ...rest } = g.serialize();
+  const old = { ...rest, v: 1, deal: 123456, lastDealt: [0, 2, 1] };
+  const loaded = Game.load(JSON.parse(JSON.stringify(old)));
+  assert.equal(loaded.level, g.level);
+  assert.equal(loaded.score, g.score);
+  assert.deepEqual(loaded.palette, palette);
+  for (let i = 0; i < 10 && loaded.phase === 'aim'; i++) {
+    loaded.fire(0.6 + i * 0.2);
+    if (loaded.phase === 'aim') assert.ok(loaded.board.colors().includes(loaded.hand[1].c));
+  }
+});
+
 test('game: the run ends when bubbles reach the launcher line', () => {
   const g = new Game({ seed: 3 });
   g.board = board('# # # # # # # # # #');

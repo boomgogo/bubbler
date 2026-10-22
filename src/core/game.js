@@ -13,9 +13,12 @@ import { traceShot, tracePierce } from './shot.js';
 export const clampAim = (angle) => Math.min(Math.PI - AIM_MIN, Math.max(AIM_MIN, angle));
 
 export class Game {
+  #queue = []; // the level's colours, in the order they are dealt
+  #queueRng = null;
+  #waits = []; // per colour, queue places since it last came up
+
   constructor({ seed = (Math.random() * 2 ** 32) >>> 0 } = {}) {
     this.seed = seed >>> 0;
-    this.deal = createRng(mixSeed(this.seed, 7919));
     this.level = 0;
     this.score = 0;
     this.moves = START_MOVES;
@@ -27,7 +30,6 @@ export class Game {
     this.reviveGifted = false;
     this.specials = []; // caught or bought special shots, fired before the hand
     this.hand = [null, null];
-    this.lastDealt = [];
     this.stats = { shots: 0, popped: 0, dropped: 0, best: 0 };
     this.phase = 'aim'; // aim | cleared | nomoves | over
     this.overReason = '';
@@ -42,17 +44,46 @@ export class Game {
     this.scrollRow = Math.max(0, this.levelRows - VISIBLE_ROWS);
     this.gifted = { lowMoves: false, crowd: false };
     this.phase = 'aim';
+    this.#openQueue(this.board.allColors());
+  }
+
+  // Each level deals from a queue made from the seed and the level alone, over every colour in the
+  // level (Mist-hidden ones too). So everyone who plays a seed is dealt the same colours in every
+  // level, however they play, until their boards differ in a colour.
+  #openQueue(palette, dealt = 0, fixes = 0) {
+    this.palette = palette;
+    this.dealt = dealt; // bubbles dealt this level
+    this.fixes = fixes; // bubbles in hand recoloured this level
+    this.#queue = [];
+    this.#queueRng = createRng(mixSeed(this.seed, 7919 + this.level));
+    this.#waits = [];
+  }
+
+  // The n-th colour of the level's queue. A colour that has waited too long comes next; otherwise any.
+  #queued(n) {
+    const palette = this.palette;
+    while (this.#queue.length <= n) {
+      let c = palette.find((col) => (this.#waits[col] ?? 0) >= DROUGHT);
+      if (c === undefined) c = this.#queueRng.pick(palette);
+      for (const col of palette) this.#waits[col] = (this.#waits[col] ?? 0) + 1;
+      this.#waits[c] = 0;
+      this.#queue.push(c);
+    }
+    return this.#queue[n];
+  }
+
+  // A colour that can be matched now, in place of one that can't. Integer maths only, so every
+  // browser picks the same. Deals count n up from 0, recolourings down from -1.
+  #standIn(colors, n) {
+    return colors[mixSeed(mixSeed(this.seed, 7919 + this.level), n) % colors.length];
   }
 
   #dealBubble() {
     const colors = this.board.colors();
     if (!colors.length) return { k: KIND.COLOR, c: 0 };
-    // A colour that has waited too long comes next; otherwise any colour on the board.
-    let c = colors.find((col) => (this.lastDealt[col] ?? 0) >= DROUGHT);
-    if (c === undefined) c = this.deal.pick(colors);
-    for (const col of colors) this.lastDealt[col] = (this.lastDealt[col] ?? 0) + 1;
-    this.lastDealt[c] = 0;
-    return { k: KIND.COLOR, c };
+    const n = this.dealt++;
+    const want = this.palette.length ? this.#queued(n) : -1;
+    return { k: KIND.COLOR, c: colors.includes(want) ? want : this.#standIn(colors, n) };
   }
 
   // A bubble in hand whose colour has left the board would be a wasted move: swap its colour.
@@ -63,7 +94,7 @@ export class Game {
     this.hand = this.hand.map((b) => {
       if (colors.includes(b.c)) return b;
       changed = true;
-      return { k: KIND.COLOR, c: this.deal.pick(colors) };
+      return { k: KIND.COLOR, c: this.#standIn(colors, -1 - this.fixes++) };
     });
     return changed;
   }
@@ -238,16 +269,17 @@ export class Game {
     if (this.phase !== 'cleared') return false;
     this.moves += MOVES_PER_LEVEL;
     this.#startLevel(this.level + 1);
-    this.lastDealt = [];
     this.#refreshHand();
     return true;
   }
 
   serialize() {
     return {
-      v: 1,
+      v: 2,
       seed: this.seed,
-      deal: this.deal.state,
+      palette: this.palette,
+      dealt: this.dealt,
+      fixes: this.fixes,
       level: this.level,
       score: this.score,
       moves: this.moves,
@@ -259,7 +291,6 @@ export class Game {
       reviveGifted: this.reviveGifted,
       specials: this.specials,
       hand: this.hand,
-      lastDealt: this.lastDealt,
       stats: this.stats,
       phase: this.phase,
       scrollRow: this.scrollRow,
@@ -270,16 +301,18 @@ export class Game {
   }
 
   static load(data) {
-    if (!data || data.v !== 1 || data.phase === 'over') return null;
+    if (!data || (data.v !== 1 && data.v !== 2) || data.phase === 'over') return null;
     const game = new Game({ seed: data.seed });
-    game.deal.state = data.deal;
     for (const key of [
       'level', 'score', 'moves', 'gems', 'streak', 'dry', 'sinceDryGift', 'revives', 'reviveGifted',
-      'specials', 'hand', 'lastDealt', 'stats', 'phase', 'scrollRow', 'levelRows', 'gifted',
+      'specials', 'hand', 'stats', 'phase', 'scrollRow', 'levelRows', 'gifted',
     ]) {
       game[key] = data[key];
     }
     game.board = new Board(data.rows.map((row) => row.map((b) => (b === 0 ? null : makeBubble(b[0], b[1], b[2])))));
+    // A run saved before the queue (v1) deals from the start of its level's queue.
+    const palette = data.palette ?? generateLevel(data.level, data.seed).allColors();
+    game.#openQueue(palette, data.dealt ?? 0, data.fixes ?? 0);
     return game;
   }
 }

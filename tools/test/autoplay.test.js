@@ -53,7 +53,7 @@ test('the expert never reads a colour hidden by Mist', () => {
 test('the expert never reads the deal', () => {
   const game = gameAt(4, 5);
   const before = decide(game);
-  game.deal.state = 12345;
+  game.dealt += 3; // every bubble still to come changes; the two in hand do not
   assert.deepEqual(decide(game), before);
 });
 
