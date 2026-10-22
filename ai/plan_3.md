@@ -6,7 +6,7 @@ Answers `ai/prompt_3.md`. Two features:
    you watch any of them play.
 2. **More games on Maize.Live**: a link on the loading screen and on the pause screen.
 
-Nothing here is implemented yet.
+**Built.** `ai/next_3.md` says what was built, what was measured, and where it differs from this plan.
 
 ## What I checked (the facts this plan rests on)
 

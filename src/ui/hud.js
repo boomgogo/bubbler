@@ -36,6 +36,8 @@ export class Hud {
     click('btn-again', on.again);
     click('btn-play', on.play);
     click('btn-new', on.newRun);
+    click('btn-friends', on.friends);
+    click('btn-friends-p', on.friends);
     $('quality').addEventListener('click', (e) => e.target.dataset.q && on.quality(e.target.dataset.q));
     $('skip').textContent = matchMedia('(pointer: coarse)').matches ? 'Tap to skip' : 'Click to skip';
     $('boost-comet').querySelector('span').innerHTML = gemsHtml(GEMS.comet);
@@ -55,15 +57,18 @@ export class Hud {
     style.setProperty('--fy', (frame.top - TOP_Y) * frame.unit + 'px');
   }
 
-  // The title screen starts life as the loading screen.
-  ready(saved) {
+  // The title screen starts life as the loading screen. `label` is what Play says; `fresh` offers a new run.
+  ready(label, fresh) {
     $('bar').hidden = true;
     $('boot-msg').hidden = true;
     const play = $('btn-play');
+    const first = play.hidden;
     play.hidden = false;
-    play.textContent = saved ? `Continue · level ${saved.level}` : 'Play';
-    $('btn-new').hidden = !saved;
-    play.focus({ preventScroll: true });
+    play.textContent = label;
+    $('btn-new').hidden = !fresh;
+    $('btn-friends').hidden = false;
+    document.querySelector('#boot .friends-note').hidden = false;
+    if (first) play.focus({ preventScroll: true });
   }
 
   bootError(message) {
@@ -172,6 +177,11 @@ export class Hud {
   // During the level fly-over only the hint line and a skip note are on screen.
   fly(on) {
     $('hud').classList.toggle('fly', on);
+  }
+
+  // While another player's game is on show, the boosts are theirs to press, not ours.
+  watch(on) {
+    $('hud').classList.toggle('watch', on);
   }
 
   // A curtain over the scene, in the colour of the place it hides, while the place changes.

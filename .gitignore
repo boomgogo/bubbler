@@ -156,3 +156,6 @@ ref/
 
 # Gameplay videos made by tools/record.js
 recordings/
+
+# The local p3p2 server made by tools/p3p2-local.js
+.p3p2/

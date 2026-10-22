@@ -72,6 +72,11 @@ export class Game {
     return this.#queue[n];
   }
 
+  // The level's first `count` queued colours, for checking that every browser deals the same.
+  peekQueue(count) {
+    return Array.from({ length: count }, (_, n) => this.#queued(n));
+  }
+
   // A colour that can be matched now, in place of one that can't. Integer maths only, so every
   // browser picks the same. Deals count n up from 0, recolourings down from -1.
   #standIn(colors, n) {
@@ -300,8 +305,9 @@ export class Game {
     };
   }
 
-  static load(data) {
-    if (!data || (data.v !== 1 && data.v !== 2) || data.phase === 'over') return null;
+  // `finished` also takes a run that is over: a race's, which is kept so that it cannot be played twice.
+  static load(data, { finished = false } = {}) {
+    if (!data || (data.v !== 1 && data.v !== 2) || (data.phase === 'over' && !finished)) return null;
     const game = new Game({ seed: data.seed });
     for (const key of [
       'level', 'score', 'moves', 'gems', 'streak', 'dry', 'sinceDryGift', 'revives', 'reviveGifted',

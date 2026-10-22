@@ -1,5 +1,6 @@
 // The controller: takes input, asks the rules what happened, and plays the result back
-// through the view, the HUD and the sound.
+// through the view, the HUD and the sound. It can also play back another player's game, as their
+// page reports it, while this player's own run waits (src/net/race.js drives that).
 import { Game, clampAim } from './core/game.js';
 import { applyShot } from './core/rules.js';
 import { specialName } from './core/board.js';
@@ -17,6 +18,13 @@ import { store } from './platform/storage.js';
 import { bindInput } from './platform/input.js';
 
 const TICK = TICK_MS / 1000;
+
+// A short hash (FNV-1a), for comparing what different pages hold.
+function hash(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
 
 export function start() {
   const settings = { sound: true, music: true, quality: 'auto', ...store.get('settings', {}) };
@@ -48,6 +56,19 @@ export function start() {
   let swapQueue = null; // while the veil is down for a change of place: what to do once it lifts
   const swapping = () => swapQueue !== null;
   let controlsShown = false;
+  let warm = false; // the title screen can take a tap
+  let title = null; // what the title screen's Play says while a race has its own words for it
+  let save = soloSave; // where the run on screen is kept: the solo run, or a race's
+  let held = false; // a sheet over the game takes input, as pausing does, while the game plays on
+  // Another player's game on show: this player's own waits in `own`, exactly as it was left.
+  let watching = false;
+  let own = null;
+  let steps = []; // what the player on show did, waiting its turn to be played back
+  let playingBack = false; // one of those steps is on screen now
+  let stepNo = 0;
+  const hooks = {}; // the race module listens here: change, aim, over, frame, back, ...
+  const emit = (name, ...args) => hooks[name]?.(...args);
+  const canPlay = () => playing && !paused && !held && !watching;
 
   const hud = new Hud({
     play: () => begin(),
@@ -64,35 +85,37 @@ export function start() {
       startLevel(true, { slide: false });
       setPaused(false);
     },
+    friends: () => emit('friends'),
     toggleSound: () => saveSettings({ sound: !settings.sound }),
     toggleMusic: () => saveSettings({ music: !settings.music }),
     quality: (quality) => saveSettings({ quality }),
     comet: () => {
-      if (locked || !game.buyComet()) return;
+      if (locked || !canPlay() || !game.buyComet()) return;
       audio.gem();
       showHand('special');
       afterChange();
+      emit('change', 'comet');
     },
     clear: () => {
-      if (locked) return;
+      if (locked || !canPlay()) return;
       const reveals = game.buyClear();
       if (!reveals) return;
-      view.sync(game.board, game.scrollRow);
-      for (const r of reveals) view.liftMist(r.id, r.delay * 0.08);
-      audio.reveal();
-      showHand('set');
-      afterChange();
+      showClear(reveals);
+      emit('change', 'clear');
     },
     revive: () => {
-      if (!game.revive()) return;
+      if (watching || !game.revive()) return;
       hud.show('revive', false);
       audio.gem();
       locked = false;
       afterChange();
+      emit('change', 'revive');
     },
     end: () => {
+      if (watching) return;
       hud.show('revive', false);
       game.endRun();
+      emit('change', 'end');
       gameOver();
     },
     again: () => {
@@ -135,6 +158,12 @@ export function start() {
     audio.click();
   }
 
+  // The solo run is kept until it ends; one that is over starts afresh next time.
+  function soloSave(g) {
+    if (g.phase === 'over') store.remove('run');
+    else store.set('run', g.serialize());
+  }
+
   // What the launcher shows. A caught special appears only once it has arrived.
   function showHand(mode) {
     const ready = game.specials.slice(0, game.specials.length - catching);
@@ -144,7 +173,9 @@ export function start() {
   }
 
   function showAim() {
-    if (!aiming || locked || !playing || game.phase !== 'aim') return view.setAim(null);
+    const on = aiming && !locked && playing && game.phase === 'aim';
+    if (!watching) emit('aim', on ? clampAim(angle) : null);
+    if (!on) return view.setAim(null);
     view.setAim(game.preview(angle), lookOf(game.active), clampAim(angle));
   }
 
@@ -153,22 +184,36 @@ export function start() {
     view.stage.setDanger(Math.min(1, Math.max(0, (depth - (FAIL_ROW - 5)) / 4)));
   }
 
+  function showClear(reveals) {
+    view.sync(game.board, game.scrollRow);
+    for (const r of reveals) view.liftMist(r.id, r.delay * 0.08);
+    audio.reveal();
+    showHand('set');
+    afterChange();
+  }
+
   function afterChange() {
     hud.update(game);
     showAim();
     showDanger();
-    if (game.phase === 'over') store.remove('run');
-    else store.set('run', game.serialize());
+    if (!watching) save(game);
   }
 
   function newGame(saved) {
-    game = saved ?? new Game(debugSeed === null ? undefined : { seed: debugSeed });
-    if (game.phase === 'cleared') game.nextLevel(); // the tab was closed on the level card
+    const g = saved ?? new Game(debugSeed === null ? undefined : { seed: debugSeed });
+    if (g.phase === 'cleared') g.nextLevel(); // the tab was closed on the level card
+    setGame(g);
+  }
+
+  // Puts a game on screen as it stands, with nothing in flight.
+  function setGame(g) {
+    game = g;
     timers = [];
     catching = 0;
     swapQueue = null;
     forgetHints();
     hud.veil(false);
+    hud.fly(false);
     view.stopFlight();
     view.dying.length = view.falling.length = 0;
     view.flying = null;
@@ -183,15 +228,30 @@ export function start() {
     audio.unlock();
     hud.startGame();
     playing = true;
+    emit('playing');
     prefetch();
+    if (game.stats.shots === 0 && game.phase === 'aim') startLevel(true, { slide: false }); // a new run: fly over it
+    else carryOn();
+  }
+
+  // Carries on with a run already under way: the card it is waiting on, if any, or play.
+  function carryOn() {
     if (game.phase === 'nomoves') {
       locked = true;
       hud.revive(game, null);
-    } else if (game.stats.shots === 0) startLevel(true, { slide: false }); // a new run: fly over it
-    else {
+    } else if (game.phase === 'over') {
+      locked = true;
+      showOver();
+    } else {
       controlsHint();
       unlock();
     }
+    syncPlace();
+  }
+
+  function showTitle() {
+    const label = title ?? (game.stats.shots > 0 ? `Continue · level ${game.level}` : 'Play');
+    hud.ready(label, !title && game.stats.shots > 0);
   }
 
   // How to shoot, until the player has a few shots behind them.
@@ -256,7 +316,7 @@ export function start() {
   }
 
   function teachCheck() {
-    if (playing && !view.flight) for (const name of teacher.fresh(game)) teach(name);
+    if (playing && !watching && !view.flight) for (const name of teacher.fresh(game)) teach(name);
   }
 
   // ---- Places ----
@@ -320,12 +380,14 @@ export function start() {
     });
   }
 
-  // Shows the place this level wants if it arrived late (a run continued in a later place),
-  // between shots. Level starts change place during the level card instead.
+  // Shows the place this level wants if it arrived late (a run continued in a later place, or a
+  // return from watching someone elsewhere): between shots, or under a card. Level starts change
+  // place during the level card instead.
   function syncPlace() {
     const entry = ready.get(wantedPlace());
     if (!entry || entry.place === place || swapping() || paused || view.flight) return;
-    if (playing && (locked || game.phase !== 'aim')) return;
+    const busy = watching ? playingBack : locked && game.phase === 'aim';
+    if (playing && (busy || game.phase === 'cleared')) return;
     swapPlace(entry, () => playing && unlock());
   }
 
@@ -345,21 +407,28 @@ export function start() {
   }
 
   function swap() {
-    if (locked || paused || !playing || !game.swap()) return;
+    if (locked || !canPlay() || !game.swap()) return;
     audio.swap();
     showHand('swap');
     showAim();
+    emit('change', 'swap');
   }
 
   function fire() {
-    if (locked || paused || !playing || !aiming || game.phase !== 'aim') return;
+    if (locked || !canPlay() || !aiming || game.phase !== 'aim') return;
     const before = game.scrollRow;
     const res = game.fire(angle);
     if (!res) return;
-    locked = true;
     store.set('shots', ++shotsSeen);
     if (shotsSeen === 3) hud.hint('Tap the launcher to swap bubbles', 6);
     else hud.hint('');
+    emit('change', 'shot', clampAim(angle));
+    playShot(res, before);
+  }
+
+  // The shot flies from the launcher to wherever it stops, then shows what the rules decided.
+  function playShot(res, before) {
+    locked = true;
     const piercing = res.shot.k === KIND.COMET;
     audio.newChain();
     piercing ? audio.comet() : audio.shoot();
@@ -456,28 +525,40 @@ export function start() {
         view.kick(0.1);
       });
     }
-    res.gifts.filter((g) => g.reason !== 'revive').forEach((g, i) => {
-      after(0.5 + i * 0.5, () => {
-        audio.gem();
-        hud.gift(g);
+    // Gems the game hands over speak to whoever is playing, so they stay off another player's screen.
+    if (!watching) {
+      res.gifts.filter((g) => g.reason !== 'revive').forEach((g, i) => {
+        after(0.5 + i * 0.5, () => {
+          audio.gem();
+          hud.gift(g);
+        });
       });
-    });
+    }
     afterChange();
     after(0.08, unlock);
 
     // Whatever comes next waits for the effects to play out.
     const settle = Math.max(res.lastDelay * TICK, res.drops.length ? dropAt + 1.0 : 0) + 0.35;
-    if (res.phase === 'cleared') after(settle, levelCleared);
+    if (res.phase !== 'aim') after(settle, () => phaseReached(res));
+  }
+
+  function phaseReached(res) {
+    if (watching) return watchedPhase();
+    if (res.phase === 'cleared') levelCleared();
     else if (res.phase === 'nomoves') {
-      after(settle, () => {
-        audio.outOfMoves();
-        hud.revive(game, res.gifts.find((g) => g.reason === 'revive'));
-      });
-    } else if (res.phase === 'over') after(settle, gameOver);
+      audio.outOfMoves();
+      hud.revive(game, res.gifts.find((g) => g.reason === 'revive'));
+    } else if (res.phase === 'over') gameOver();
   }
 
   function unlock() {
-    if (game.phase !== 'aim' || catching > 0 || swapping() || view.flight) return;
+    if (catching > 0 || swapping() || view.flight) return;
+    if (watching) {
+      // A shot played back has settled: whatever the player on show did next can follow.
+      if (game.phase === 'aim') stepDone();
+      return;
+    }
+    if (game.phase !== 'aim') return;
     locked = false;
     showAim();
     teachCheck();
@@ -502,6 +583,7 @@ export function start() {
     after(2.0, () => {
       hud.cleared(level, false);
       game.nextLevel();
+      emit('change', 'level');
       if (moving) swapQueue = null;
       hud.veil(false);
       view.sync(game.board, game.scrollRow);
@@ -513,12 +595,168 @@ export function start() {
   }
 
   function gameOver() {
-    store.remove('run');
+    save(game);
     const best = store.get('best', 0);
-    const isBest = game.score > best;
-    if (isBest) store.set('best', game.score);
+    if (game.score > best) store.set('best', game.score);
     audio.gameOver();
-    hud.over(game, Math.max(best, game.score), isBest && best > 0);
+    showOver(best);
+  }
+
+  function showOver(best = store.get('best', 0)) {
+    hud.over(game, Math.max(best, game.score), game.score > best && best > 0);
+    emit('over');
+  }
+
+  // ---- Another player's game, played back from what their page sends (src/net/race.js) ----
+
+  // Puts `copy`, a game made from another player's state, on screen. This player's own game waits,
+  // saved, exactly as it is. Called again, it jumps to a newer copy.
+  function watch(copy) {
+    if (!watching) {
+      own = game;
+      save(own);
+      watching = true;
+      hud.watch(true);
+      for (const id of ['revive', 'over']) hud.show(id, false);
+    }
+    steps = [];
+    playingBack = false;
+    stepNo++;
+    hud.show('cleared', false);
+    aiming = false;
+    setGame(copy);
+    locked = false;
+    prefetch();
+    syncPlace();
+  }
+
+  // What the player on show did next. Each step is played back in turn on the copy, then checked
+  // against the state their page sent with it; anything that does not match (a browser that rounds
+  // differently, a message that went missing) jumps to their state instead.
+  function watchStep(ev, a, s) {
+    if (!watching) return;
+    steps.push({ ev, a, s });
+    if (steps.length > 3) {
+      // Too far behind to play it all: show where they are now.
+      const copy = Game.load(steps.at(-1).s, { finished: true });
+      if (copy) watch(copy);
+      return;
+    }
+    nextStep();
+  }
+
+  function nextStep() {
+    if (!watching || playingBack || !steps.length) return;
+    const { ev, a, s } = steps.shift();
+    const before = game.scrollRow;
+    let res = null;
+    if (ev === 'shot') res = game.fire(a);
+    else if (ev === 'swap') game.swap();
+    else if (ev === 'comet') game.buyComet();
+    else if (ev === 'clear') res = game.buyClear();
+    else if (ev === 'revive') game.revive();
+    else if (ev === 'level') game.nextLevel();
+    else if (ev === 'end') game.endRun();
+    if (JSON.stringify(game.serialize()) !== JSON.stringify(s)) {
+      const copy = Game.load(s, { finished: true });
+      if (copy) watch(copy);
+      return;
+    }
+    playingBack = true;
+    const no = ++stepNo;
+    const done = (seconds) => after(seconds, () => stepDone(no));
+    if (ev === 'shot') playShot(res, before); // ends in unlock() or phaseReached()
+    else if (ev === 'swap') {
+      audio.swap();
+      showHand('swap');
+      showAim();
+      done(0.2);
+    } else if (ev === 'comet') {
+      audio.gem();
+      showHand('special');
+      afterChange();
+      done(0.3);
+    } else if (ev === 'clear') {
+      showClear(res);
+      done(0.5);
+    } else if (ev === 'level') {
+      hud.cleared(game.level - 1, false);
+      audio.scroll();
+      setGame(game);
+      prefetch();
+      done(0.6);
+    } else {
+      if (ev === 'revive') audio.gem();
+      afterChange();
+      emit('watchPhase', game.phase);
+      done(0.2);
+    }
+  }
+
+  function stepDone(no = stepNo) {
+    if (no !== stepNo || !playingBack) return;
+    playingBack = false;
+    locked = false;
+    showAim();
+    syncPlace();
+    nextStep();
+  }
+
+  // The player on show reached a card. Their page shows it; ours says so and waits for their next move.
+  function watchedPhase() {
+    if (game.phase === 'cleared') {
+      audio.levelUp();
+      hud.cleared(game.level, true);
+    } else if (game.phase === 'nomoves') audio.outOfMoves();
+    emit('watchPhase', game.phase);
+    stepDone();
+  }
+
+  // Their aim line, as their page reports it; null while they are not aiming.
+  function watchAim(a) {
+    if (!watching) return;
+    aiming = a !== null;
+    if (aiming) angle = a;
+    showAim();
+  }
+
+  // Back to this player's own game, as it was left.
+  function unwatch() {
+    if (!watching) return;
+    endWatch();
+    const g = own;
+    own = null;
+    newGame(g);
+    carryOn();
+    emit('change', 'sync');
+  }
+
+  function endWatch() {
+    watching = false;
+    steps = [];
+    playingBack = false;
+    stepNo++;
+    aiming = false;
+    hud.watch(false);
+    hud.show('cleared', false);
+  }
+
+  // Plays another run in place of this one: the solo run, or a race's. The run on screen is saved
+  // first. `keep` saves the new run; `label` is what the title screen's Play says while it waits.
+  function useRun(g, { keep = soloSave, label = null } = {}) {
+    if (watching) {
+      endWatch();
+      own = null;
+    } else save(game);
+    for (const id of ['revive', 'over']) hud.show(id, false);
+    save = keep;
+    title = label;
+    newGame(g);
+    if (!playing) {
+      if (warm) showTitle();
+    } else if (game.stats.shots === 0 && game.phase === 'aim') startLevel(true, { slide: false });
+    else carryOn();
+    emit('change', 'sync');
   }
 
   // Pointer position to an aim angle, or null when it points below the launcher.
@@ -544,12 +782,14 @@ export function start() {
       return true;
     },
     aim(px, py) {
+      if (watching) return;
       const a = aimAt(px, py);
       aiming = a !== null;
       if (aiming) angle = a;
       showAim();
     },
     release(px, py, startedAt, pointerType) {
+      if (watching) return;
       if (!startedAt.moved && onLauncher(startedAt.x, startedAt.y)) swap();
       else {
         const a = aimAt(px, py);
@@ -562,15 +802,28 @@ export function start() {
       showAim();
     },
     cancel() {
+      if (watching) return;
       aiming = false;
       showAim();
     },
     swap,
     key(e) {
-      if (!playing) return;
+      if (!playing || hooks.keysOff?.()) return;
+      const pauseKey = e.key === 'Escape' || e.key === 'p' || e.key === 'P';
+      if (paused) {
+        if (pauseKey) setPaused(false);
+        return;
+      }
+      // A sheet over the game, or another player's game on show, takes only its own keys.
+      if (held || watching) {
+        if (e.key === 'Escape') emit(held ? 'escape' : 'back');
+        else if (watching && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) emit('step', e.key === 'ArrowLeft' ? -1 : 1);
+        else return;
+        e.preventDefault();
+        return;
+      }
       const step = e.shiftKey ? 0.09 : 0.025;
-      if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') setPaused(!paused);
-      else if (paused) return;
+      if (pauseKey) setPaused(true);
       else if (view.flight) view.skipFlight();
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         aiming = true;
@@ -589,11 +842,13 @@ export function start() {
     },
   });
 
-  addEventListener('resize', () => {
+  // The score bar's height changed (a race adds a line to it): the field makes room.
+  function relayout() {
     view.topPx = hud.topPx;
     view.resize();
     if (paused) view.frame(0);
-  });
+  }
+  addEventListener('resize', relayout);
   document.addEventListener('visibilitychange', () => document.hidden && setPaused(true));
   // If the GPU drops the context, start over; the run is saved after every shot.
   canvas.addEventListener('webglcontextlost', (e) => e.preventDefault());
@@ -617,6 +872,7 @@ export function start() {
       timers = timers.filter((t) => t.at > due);
       for (const t of ready) t.fn();
     }
+    emit('frame', dt);
     view.frame(dt);
     hud.frame(dt);
     if (debug) {
@@ -633,7 +889,8 @@ export function start() {
     canvas.classList.add('on');
     last = performance.now();
     raf = requestAnimationFrame(loop);
-    hud.ready(game.stats.shots > 0 ? game : null);
+    warm = true;
+    showTitle();
     performance.mark('bubbler-ready');
   });
 
@@ -646,15 +903,40 @@ export function start() {
     store.remove('run');
   }
 
+  // What the race module may do with the game.
+  const app = {
+    get game() { return game; },
+    // This player's own game, also while another's is on show.
+    get own() { return own ?? game; },
+    get playing() { return playing; },
+    get watching() { return watching; },
+    on(name, fn) { hooks[name] = fn; },
+    useRun,
+    setTitle(label) {
+      title = label;
+      if (warm && !playing) showTitle();
+    },
+    watch, watchStep, watchAim, unwatch,
+    hold(on) {
+      held = on;
+      if (on) aiming = false;
+      showAim();
+    },
+    relayout,
+    pause: (on) => setPaused(on),
+    show: (id, on) => hud.show(id, on),
+    toast: (text, seconds) => hud.toast(text, seconds),
+  };
+
   if (debug) {
     // Handles for tests and for poking at the game from the console.
     window.__bubbler = {
       get game() { return game; },
       get place() { return place.id; },
       // For the autoplayer: whether a shot would be taken now, and the angle the pointer gives.
-      get ready() { return playing && !paused && !locked && game.phase === 'aim'; },
+      get ready() { return playing && !paused && !held && !watching && !locked && game.phase === 'aim'; },
       get aim() { return aiming ? clampAim(angle) : null; },
-      view, hud, audio, teacher,
+      view, hud, audio, teacher, app,
       level(n) {
         jumpTo(n);
         if (playing) startLevel(true, { slide: false });
@@ -674,6 +956,20 @@ export function start() {
         return { pops: r.pops.length, drops: r.drops.length, caught: r.caught.length, blasts: r.blasts.length, reveals: r.reveals.length, left: board.count() };
       },
       refresh() { view.sync(game.board, game.scrollRow); view.setScroll(game.scrollRow); showHand('set'); afterChange(); },
+      // What a seed deals at a level, as a hash: its board and the first 40 colours of its queue.
+      // Every browser must give the same.
+      fingerprint(level, seed = app.own.seed) {
+        const g = new Game({ seed });
+        while (g.level < level) {
+          g.phase = 'cleared';
+          g.nextLevel();
+        }
+        const rows = g.board.rows.map((row) => row.map((b) => (b ? [b.k, b.c, b.m] : 0)));
+        return hash(JSON.stringify([rows, g.peekQueue(40)]));
+      },
+      // The game on screen as a hash, to compare one page's with another's.
+      state() { return hash(JSON.stringify(game.serialize())); },
     };
   }
+  return app;
 }

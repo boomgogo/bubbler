@@ -15,12 +15,15 @@
     "cut": "node tools/cut.js",
     "check:size": "node tools/check-size.js",
     "check:nan": "node tools/check-nan.js",
+    "check:mp": "node tools/check-mp.js",
     "perf": "node tools/perf.js",
     "music": "node tools/music.js",
     "place-cost": "node tools/place-cost.js",
+    "p3p2": "node tools/p3p2-local.js",
     "deploy": "node tools/predeploy.js && vite build && node tools/check-size.js && wrangler deploy"
   },
   "dependencies": {
+    "@p3p2/client": "^0.1.1",
     "three": "^0.186.1"
   },
   "devDependencies": {
