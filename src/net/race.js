@@ -21,8 +21,8 @@ const PHASES = new Set(['title', 'aim', 'cleared', 'nomoves', 'over']);
 const DOING = { title: 'about to start', aim: 'playing', cleared: 'playing', nomoves: 'out of moves', over: 'finished' };
 const CLOSED = {
   left: 'You left the room.',
-  kicked: 'Someone hosting the room took you out of it.',
-  ended: 'Whoever hosts the room closed it.',
+  kicked: "The room's owner took you out of it.",
+  ended: "The room's owner ended the game.",
   replaced: 'The room is open in another tab of this browser now.',
   lost: 'The connection to the room could not be brought back.',
 };
@@ -402,7 +402,7 @@ export class Race {
     $('btn-leave').hidden = !on;
     $('btn-again').hidden = on;
     $('over-race').hidden = !on;
-    for (const id of ['btn-friends', 'btn-friends-p']) $(id).textContent = on ? 'Friends & chat' : 'Play with friends';
+    $('btn-friends').textContent = on ? 'Friends & chat' : 'Play with friends';
     this.app.relayout();
   }
 

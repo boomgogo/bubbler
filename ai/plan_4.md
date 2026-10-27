@@ -64,14 +64,10 @@ On the title screen every corner is clear except bottom-right, where the version
   shows it.
 
 **Also to check: keys after the button is clicked.**
-- **The risk:**
-  - `P3P2.isTyping` is true whenever focus is on p3p2's element.
-  - p3p2 doesn't move focus when its panel closes.
-  - So after a click on the button and the panel's ×, Esc and the other keys might do nothing until the next tap
-    on the field. (The canvas takes focus away on a tap.)
-- **The test:** a new check covers it.
-- **If it fails:** the game ignores keys only while a text field in the panel has focus. The panel's shadow root is
-  open, so the game can see which element has focus.
+- `P3P2.isTyping` is true whenever focus is on p3p2's element, and the game ignores keys while it is.
+- p3p2 0.2 handles this itself: closing the panel (× or Esc) takes focus off whatever in it had it, and keys
+  pressed inside the panel never reach the page.
+- **The test:** a new check confirms Esc still pauses after the panel is opened from the button and closed.
 
 ## Feature 1: p3p2 0.2.0
 
@@ -178,8 +174,9 @@ Before Play grows by 0.07 KB. Every later chunk stays under 20 KB.
   - **Keys:** `chatKey: 't'`, and `keysOff` with `P3P2.isTyping`.
   - **The room's version:** `game.version: BUILD_ID`.
 - **The code for a room that opens mid-game** (the start card asks first) stays.
-  - In 0.2 a room opens only from an invite link, and that link loads the page, so a player meets the start card
-    from the title screen.
+  - In 0.2 a room opens only from an invite link, and that link loads the page.
+  - But *Join?* sits in a corner and doesn't block the game. A player can press **Play** and take shots before
+    answering it, and the room then opens mid-game.
   - Its check is rewritten for that path (below).
 
 ### The local server: `tools/p3p2-local.js`
@@ -197,15 +194,21 @@ Before Play grows by 0.07 KB. Every later chunk stays under 20 KB.
   2. `POST /room/<key>/settings` with `name`, `max` and `origins` adds the other sites: the LAN address and
      `localhost`, on ports 5173 and 4173.
   3. `GET /room/<key>`: the invite link is the room page's **Open** link.
+- **Invites expire.** An invite lasts 12 hours after the room empties, and the countdown restarts each time the
+  room closes. So the invite is never saved:
+  - every run reads the current one from `GET /room/<key>`;
+  - if there is none, `POST /room/<key>/invite` makes a new one.
 - **What it exports:**
   - `createRoom` returns `{ page, invite }`;
-  - `endRoom(server, room)` posts `/room/<key>/end`, for the tests.
+  - `roomInvite(server, page)` returns the room's current invite, making one if it has none;
+  - `endRoom(server, page)` posts `/room/<key>/end`, for the tests.
 - **What it prints:**
   - **The invite link,** for the dev server at the LAN address.
   - **The same invite on the preview's port.** The link is `<game URL>?room=<server>/<code>`, so the same `room=`
     value works on every site the room takes.
 - **`--lag`:** the invite again, with its server moved to the proxy's port.
-- **`room.json`** gains `invite`. A saved room without one is made again.
+- **`room.json`** keeps the room's page, not its invite. A saved room from 0.1 (a room URL, no page) is made
+  again.
 - **Settings that stay:** `P3P2_CONNECT_RATE` and `P3P2_API_RATE` are still in 0.2's `config.ts`.
 
 ### Tests
@@ -227,10 +230,12 @@ Before Play grows by 0.07 KB. Every later chunk stays under 20 KB.
 - *After the panel is opened from the button and closed, Esc still pauses the game.*
 
 **Changed checks:**
-- **A room opened mid-game** becomes *an invite opened during a solo run*:
+- **A room opened mid-game** becomes *Join? answered during a solo run*:
   1. Gus takes two shots alone.
-  2. He opens the invite in the same tab, joins, starts the race, and leaves.
-  3. His solo run comes back exactly as it was.
+  2. He opens the invite in the same tab. While *Join?* waits, he presses Play and takes two more shots.
+  3. He answers *Join?*. The start card asks first, and his solo run waits.
+  4. He starts the race, and leaves.
+  5. His solo run comes back exactly as it was.
 - **The room ended by its host** becomes *the room ended by its owner*: `endRoom` through the portal. Cy reads
   *The room's owner ended the game.*
 - **The lag runs** use the invite through the proxy.
@@ -300,4 +305,7 @@ Before Play grows by 0.07 KB. Every later chunk stays under 20 KB.
 - **Front-page rooms in `check-mp`.** That flow is p3p2's, and the game uses the panel for it either way.
 - **Real iPhone safe areas.** Playwright's Chromium reports no safe-area insets, so this needs a look on a
   phone.
+  - The safe-area rule raises the panel, but the panel's own height limit assumes a 12 px gap. On an upright
+    iPhone a very tall panel could run about 22 px under the status bar. Its inside can't be styled from the
+    page.
 - **WebKit** still needs `sudo npx playwright install-deps webkit`.

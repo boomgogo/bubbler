@@ -37,7 +37,6 @@ export class Hud {
     click('btn-play', on.play);
     click('btn-new', on.newRun);
     click('btn-friends', on.friends);
-    click('btn-friends-p', on.friends);
     $('quality').addEventListener('click', (e) => e.target.dataset.q && on.quality(e.target.dataset.q));
     $('skip').textContent = matchMedia('(pointer: coarse)').matches ? 'Tap to skip' : 'Click to skip';
     $('boost-comet').querySelector('span').innerHTML = gemsHtml(GEMS.comet);
@@ -67,7 +66,6 @@ export class Hud {
     play.textContent = label;
     $('btn-new').hidden = !fresh;
     $('btn-friends').hidden = false;
-    document.querySelector('#boot .friends-note').hidden = false;
     if (first) play.focus({ preventScroll: true });
   }
 

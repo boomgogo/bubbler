@@ -23,7 +23,7 @@
     "deploy": "node tools/predeploy.js && vite build && node tools/check-size.js && wrangler deploy"
   },
   "dependencies": {
-    "@p3p2/client": "^0.1.1",
+    "@p3p2/client": "^0.2.0",
     "three": "^0.186.1"
   },
   "devDependencies": {

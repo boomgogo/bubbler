@@ -4,8 +4,8 @@ import { P3P2 } from '@p3p2/client';
 
 export function friends(app) {
   // The version is the build: two builds may deal differently, so they never share a room.
-  const p3p2 = new P3P2({ game: { id: 'bubbler', version: BUILD_ID }, ui: { button: false, chatKey: 't' } });
-  for (const el of document.querySelectorAll('.game-host')) el.textContent = location.host;
+  // p3p2's own button goes in the bottom-left corner, the one corner clear of the game's controls on a phone.
+  const p3p2 = new P3P2({ game: { id: 'bubbler', version: BUILD_ID }, ui: { corner: 'bottom-left', chatKey: 't' } });
   app.on('keysOff', () => P3P2.isTyping);
   app.on('friends', () => p3p2.open().catch(console.error));
 

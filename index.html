@@ -64,8 +64,6 @@ b { font-weight: 500; }
 .fork svg { width: 16px; height: 16px; }
 .links { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 18px; }
 .links .fork { margin-top: 0; }
-.note { font-size: 13px; color: var(--dim); margin: 8px 0 0; }
-.note a, .note b { color: var(--ink); font-weight: 400; overflow-wrap: anywhere; }
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin-top: 6px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .seg button { padding: 8px 4px; font-size: 14px; color: var(--dim); }
 .seg button.on { background: rgba(150, 185, 255, .22); color: var(--ink); }
@@ -151,11 +149,14 @@ b { font-weight: 500; }
 /* Covers the scene while one place gives way to the next. */
 #veil { position: fixed; inset: 0; z-index: 3; background: #060b1e; opacity: 0; transition: opacity .35s; pointer-events: none; }
 #veil.on { opacity: 1; }
-#debug { position: fixed; left: 6px; bottom: 4px; z-index: 9; font: 11px/1.3 ui-monospace, monospace; color: #9fe; pointer-events: none; white-space: pre; }
+#debug { position: fixed; left: 80px; bottom: 4px; z-index: 9; font: 11px/1.3 ui-monospace, monospace; color: #9fe; pointer-events: none; white-space: pre; }
 
 /* Racing friends: a second line in the score bar (the field makes room for it), the standings, and the watch bar. */
 :root.racing { --top: 82px; }
-.racing .friends-note { display: none; }
+/* p3p2's multiplayer button, and the panel that opens from it: bottom-left, clear of a notch or a rounded corner. */
+p3p2-panel { left: max(12px, env(safe-area-inset-left, 0px)) !important; bottom: max(12px, var(--safe-b)) !important; }
+/* On a narrow phone a tall card would reach the button's corner: cards stop above it. */
+@media (max-width: 460px) { .screen { padding-bottom: calc(max(12px, var(--safe-b)) + 40px); } }
 .racing #topbar { grid-template-rows: minmax(0, 1fr) 28px; row-gap: 0; padding-bottom: 4px; }
 #race { grid-column: 1 / -1; display: flex; justify-content: center; align-items: center; min-width: 0; }
 #race button { padding: 4px 12px; border-radius: 999px; font-size: 13px; line-height: 1.2; border: 1px solid var(--line); background: rgba(8, 14, 34, .5); white-space: nowrap; }
@@ -230,7 +231,6 @@ b { font-weight: 500; }
       <button class="btn go" id="btn-play" hidden>Play</button>
       <button class="btn" id="btn-new" hidden>New run</button>
       <button class="btn" id="btn-friends" hidden>Play with friends</button>
-      <p class="note friends-note" hidden>Racing needs a room URL from a p3p2 server: get one at <a href="https://p3p2.me" target="_blank" rel="noopener">p3p2.me</a>. When it asks for the game's address, give it <b class="game-host"></b>.</p>
     </div>
     <div class="links">
       <a class="fork" href="%REPO_URL%" target="_blank" rel="noopener">
@@ -239,7 +239,7 @@ b { font-weight: 500; }
       </a>
       <a class="fork" href="%MORE_GAMES_URL%" target="_blank" rel="noopener">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><circle cx="17" cy="17" r="3.6"/></svg>
-        More games on Maize.Live
+        More games on Muon.Day
       </a>
     </div>
     <p class="small">Open source. No ads. Yours to adapt.</p>
@@ -250,8 +250,6 @@ b { font-weight: 500; }
   <div class="box">
     <h2>Paused</h2>
     <button class="btn go" id="btn-resume">Resume</button>
-    <button class="btn" id="btn-friends-p">Play with friends</button>
-    <p class="note friends-note">Racing needs a room URL from a p3p2 server: get one at <a href="https://p3p2.me" target="_blank" rel="noopener">p3p2.me</a>. When it asks for the game's address, give it <b class="game-host"></b>.</p>
     <div class="pair">
       <button class="btn" id="btn-sound">Sound on</button>
       <button class="btn" id="btn-music">Music on</button>
@@ -277,7 +275,7 @@ b { font-weight: 500; }
       </a>
       <a class="fork" href="%MORE_GAMES_URL%" target="_blank" rel="noopener">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.6"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.6"/><circle cx="17" cy="17" r="3.6"/></svg>
-        More games on Maize.Live
+        More games on Muon.Day
       </a>
     </div>
   </div>

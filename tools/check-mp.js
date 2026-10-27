@@ -10,7 +10,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve } from './serve.js';
-import { startServer, createRoom, startLag } from './p3p2-local.js';
+import { startServer, createRoom, endRoom, startLag } from './p3p2-local.js';
 import { Game, clampAim } from '../src/core/game.js';
 import { applyShot } from '../src/core/rules.js';
 import { createRng } from '../src/core/rng.js';
@@ -47,13 +47,15 @@ process.on('exit', () => {
   server.stop();
   lag?.kill();
 });
-let roomUrl = await createRoom(server, { game: GAME, name: 'Bubbler test' });
+const room = await createRoom(server, { game: GAME, name: 'Bubbler test' });
 if (LAG) {
   lag = startLag({ listen: port + 1, to: port, latency: 150, jitter: 50, dropEvery: 25 });
   await sleep(500);
-  roomUrl = roomUrl.replace(`:${port}/`, `:${port + 1}/`);
 }
-console.log(`site ${GAME}\nroom ${roomUrl}${LAG ? ' (through the lag proxy)' : ''}\n`);
+// Everyone joins through a room's invite link, the owner too: with --lag, through the proxy.
+const viaLag = (link) => (LAG ? link.replace(`:${port}/`, `:${port + 1}/`) : link);
+const invite = viaLag(room.invite);
+console.log(`site ${GAME}\ninvite ${invite}${LAG ? ' (through the lag proxy)' : ''}\n`);
 
 const GPU = ['--enable-gpu', '--ignore-gpu-blocklist'];
 const engines = { chrome: await chromium.launch({ channel: 'chrome', headless: !HEADED, args: GPU }), firefox: await firefox.launch({ headless: !HEADED }) };
@@ -121,24 +123,25 @@ async function shoot(p, { bad = false } = {}) {
   await evaluate(p, (a) => window.__bubbler.fireAt(a), angle);
 }
 
-async function host(p) {
-  await p.page.goto(GAME);
-  await p.page.locator('#btn-friends').click();
-  await p.page.getByLabel('Your name').fill(p.name);
-  await p.page.getByLabel('Room URL').fill(roomUrl);
-  await p.page.getByRole('status').filter({ hasText: '✓' }).waitFor();
-  await p.page.getByRole('button', { name: 'Create a multiplayer game room for my friends' }).click();
-  const link = p.page.getByLabel('Invite link', { exact: true });
-  await link.waitFor();
-  return link.inputValue();
-}
-
 async function accept(p, invite) {
   await p.page.goto(invite);
+  await answerJoin(p);
+}
+
+// Answers Join? as the player. When the first connection is cut before the server answers (the lag proxy
+// does that now and then), p3p2 says it can't reach the server and offers Join again, as it would to a
+// player on a bad network: the player presses it again, up to three times in all.
+async function answerJoin(p) {
   const yes = p.page.getByRole('button', { name: 'Join', exact: true });
   await yes.waitFor();
   await p.page.getByLabel('Your name').fill(p.name);
-  await yes.click();
+  const refused = () => evaluate(p, () => document.querySelector('p3p2-panel').shadowRoot?.querySelector('.status.bad')?.textContent);
+  for (let tries = 0; tries < 3; tries++) {
+    await yes.click();
+    const outcome = await poll(async () => ((await evaluate(p, () => !!window.__bubbler?.race)) ? 'in' : (await yes.isEnabled().catch(() => false)) && (await refused()) ? 'refused' : null), { timeout: 15_000 });
+    if (outcome !== 'refused') return;
+    console.log(`  (${p.name}'s join was refused: ${await refused()} Joining again.)`);
+  }
 }
 
 // Closes p3p2's panel if it is open, so it is not over the game's buttons.
@@ -168,11 +171,38 @@ const rows = (p) => evaluate(p, () => [...document.querySelectorAll('#standings-
 })));
 const own = (p) => evaluate(p, () => ({ score: window.__bubbler.app.own.score, level: window.__bubbler.app.own.level, state: window.__bubbler.state() }));
 
+// p3p2's multiplayer button sits in the bottom-left corner. What it covers: of the controls named, or
+// of a screen's buttons and links, with its card scrolled to the end (what is under it there can't be
+// scrolled clear). Measured on the button as it is: wider in a room, where it shows a count.
+const CONTROLS = ['btn-pause', 'level', 'moves', 'gems', 'swap-hint', 'boost-comet', 'boost-clear', 'race-line', 'watch-bar'];
+const SIZES = [[360, 640], [390, 844], [640, 360], [1366, 768]];
+const underButton = (p, { ids, screen }) => evaluate(p, ({ ids, screen }) => {
+  const btn = document.querySelector('p3p2-panel').getBoundingClientRect();
+  let els = ids?.map((id) => document.getElementById(id));
+  if (screen) {
+    const card = document.querySelector(`#${screen} > div`);
+    card.scrollTop = card.scrollHeight;
+    els = [...card.querySelectorAll('button, a')];
+  }
+  const hit = els.filter((el) => {
+    const b = el.getBoundingClientRect();
+    return b.width && !(b.bottom <= btn.top || b.top >= btn.bottom || b.right <= btn.left || b.left >= btn.right);
+  });
+  const corner = btn.left < 40 && btn.bottom > innerHeight - 60;
+  return { hit: hit.map((el) => el.id || el.textContent.trim()), corner, size: `${Math.round(btn.width)}×${Math.round(btn.height)}` };
+}, { ids, screen });
+// Each problem as text: none is a pass.
+const cornerProblems = async (p, where, options) => {
+  const u = await underButton(p, options);
+  return !u.corner ? [`${where}: not in the corner`] : u.hit.length ? [`${where}: over ${u.hit.join(', ')} (${u.size})`] : [];
+};
+
 try {
-  // ---- Ada opens a room, Bo joins from the invite ----
+  // ---- Ada, who made the room, and Bo join from its invite ----
   const ada = await player('Ada', 'chrome');
-  const invite = await host(ada);
-  check('the panel turns a room URL into an invite link', invite.includes('room='), invite);
+  const asked = await accept(ada, invite).then(() => true, () => false);
+  const kept = asked && (await poll(() => evaluate(ada, () => !!window.__bubbler)));
+  check("the room's invite link opens the game, ?debug and all, and asks Join?", !!kept, invite);
   const bo = await player('Bo', 'firefox');
   await accept(bo, invite);
   check('Ada and Bo start the race', !!(await start(ada)) && !!(await start(bo)));
@@ -386,6 +416,12 @@ try {
     check(`on a ${w}×${h} phone the race line sits above the bubbles and covers no control`, boxes.raceBottom <= boxes.fieldTop + 1 && !boxes.hit.length && boxes.fits, JSON.stringify(boxes));
     await phone.page.screenshot({ path: join(tmpdir(), `bubbler-race-${w}x${h}.png`) });
   }
+  const inRace = [];
+  for (const [w, h] of SIZES) {
+    await phone.page.setViewportSize({ width: w, height: h });
+    await sleep(400);
+    inRace.push(...(await cornerProblems(phone, `${w}×${h}`, { ids: CONTROLS })));
+  }
 
   // ---- What it costs to watch, on a slow phone ----
   // Eve plays on the low tier with the CPU slowed 4×; frame rate while her own game waits, then
@@ -408,6 +444,8 @@ try {
   await phone.page.locator('#race-line').click();
   await phone.page.locator('#standings-rows .srow', { hasText: 'Ada' }).getByRole('button', { name: 'Watch' }).click();
   await poll(() => evaluate(phone, () => window.__bubbler.app.watching));
+  inRace.push(...(await cornerProblems(phone, 'watching at 360×640', { ids: CONTROLS })));
+  check("in a race, p3p2's button sits in the bottom-left corner and covers no control, phone to PC, watching included", !inRace.length, inRace.join('; '));
   const shots = (async () => {
     for (let i = 0; i < 6; i++) await shoot(ada, { bad: true });
   })();
@@ -418,6 +456,7 @@ try {
   await phone.page.locator('#watch-back').click();
 
   // ---- The screens, for a person to look at ----
+  const screens = { title: [], standings: [], pause: [], over: [] };
   const shots2 = [['title', 360, 640], ['title', 640, 360]];
   for (const [name, w, h] of shots2) {
     const p = await player('Shot', 'chrome', { viewport: { width: w, height: h }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
@@ -429,39 +468,67 @@ try {
       return inner.scrollHeight <= inner.clientHeight + 1 || links.bottom <= innerHeight;
     });
     check(`the title screen fits a ${w}×${h} phone, links included (or scrolls to them)`, fits);
+    screens.title.push(...(await cornerProblems(p, `${w}×${h}`, { screen: 'title' })));
     await p.page.screenshot({ path: join(tmpdir(), `bubbler-${name}-${w}x${h}.png`) });
     await p.context.close();
   }
   // Each after its fade has finished.
+  const phoneSizes = [[640, 360], [360, 640]];
   await phone.page.locator('#race-line').click();
   await sleep(500);
+  for (const [w, h] of phoneSizes) {
+    await phone.page.setViewportSize({ width: w, height: h });
+    await sleep(300);
+    screens.standings.push(...(await cornerProblems(phone, `${w}×${h}`, { screen: 'standings' })));
+  }
   await phone.page.screenshot({ path: join(tmpdir(), 'bubbler-race-standings.png') });
   await phone.page.locator('#btn-standings-close').click();
   await sleep(500);
   await phone.page.keyboard.press('Escape');
   await sleep(500);
-  await phone.page.screenshot({ path: join(tmpdir(), 'bubbler-race-pause.png'), fullPage: true });
+  for (const [w, h] of phoneSizes) {
+    await phone.page.setViewportSize({ width: w, height: h });
+    await sleep(300);
+    screens.pause.push(...(await cornerProblems(phone, `${w}×${h}`, { screen: 'pause' })));
+    await phone.page.screenshot({ path: join(tmpdir(), `bubbler-race-pause-${w}x${h}.png`) });
+  }
   await phone.page.keyboard.press('Escape');
+  // Dee's finished run, with the race's standings on its card.
+  for (const [w, h] of phoneSizes) {
+    await dee.page.setViewportSize({ width: w, height: h });
+    await sleep(300);
+    if (!(await dee.page.locator('#over').isVisible())) screens.over.push(`${w}×${h}: the card is not up`);
+    else screens.over.push(...(await cornerProblems(dee, `${w}×${h}`, { screen: 'over' })));
+    await dee.page.screenshot({ path: join(tmpdir(), `bubbler-race-over-${w}x${h}.png`) });
+  }
+  const screenNames = { title: 'title', standings: 'standings', pause: 'pause (in a race)', over: 'game-over (in a race)' };
+  for (const [id, problems] of Object.entries(screens)) {
+    check(`no button or link on the ${screenNames[id]} screen is under p3p2's button, scrolled to the end, at 360×640 and 640×360`, !problems.length, problems.join('; '));
+  }
   console.log(`  screenshots in ${tmpdir()}/bubbler-*.png`);
 
-  // ---- A room opened in the middle of a solo game ----
+  // ---- Join? answered in the middle of a solo game ----
+  // An invite loads the page, and Join? waits in its corner without stopping the game: Gus plays on
+  // in his solo run, and joins a few shots later.
   const gus = await player('Gus', 'chrome');
   await gus.page.goto(GAME);
   await poll(() => title(gus));
   await gus.page.locator('#btn-play').click();
   await shoot(gus, { bad: true });
   await shoot(gus, { bad: true });
-  await ready(gus);
+  const second = await createRoom(server, { game: GAME, name: 'Second room' });
+  await gus.page.goto(viaLag(second.invite));
+  await gus.page.getByRole('button', { name: 'Join', exact: true }).waitFor();
+  await poll(() => title(gus));
+  await gus.page.locator('#btn-play').click();
+  await shoot(gus, { bad: true });
+  await shoot(gus, { bad: true });
+  const midGame = await ready(gus);
   const soloBefore = await own(gus);
-  await gus.page.keyboard.press('Escape');
-  await gus.page.locator('#btn-friends-p').click();
-  await gus.page.getByLabel('Your name').fill('Gus');
-  await gus.page.getByLabel('Room URL').fill(await createRoom(server, { game: GAME, name: 'Second room' }));
-  await gus.page.getByRole('status').filter({ hasText: '✓' }).waitFor();
-  await gus.page.getByRole('button', { name: 'Create a multiplayer game room for my friends' }).click();
+  await answerJoin(gus);
   await gus.page.locator('#race-start').waitFor();
   const waited = await own(gus);
-  check('opening a room mid-game asks before the race starts, and the solo game waits', waited.state === soloBefore.state);
+  check('Join? answered mid-game: the start card asks before the race starts, and the solo game waits', !!midGame && waited.state === soloBefore.state);
   await closePanel(gus);
   await gus.page.locator('#btn-race-start').click();
   const raced = await ready(gus);
@@ -485,11 +552,37 @@ try {
   await sleep(1500);
   const extra = requests.filter((u) => u.includes(`:${port}`) || u.includes(`:${port + 1}`) || /p3p2-(core|panel|qr)|race-/.test(u));
   check('an ordinary visit asks no p3p2 server anything and loads no race code', !extra.length, extra.join(' '));
+  // In solo play, p3p2's button covers none of the game's controls.
+  await visitor.page.locator('#btn-play').click();
+  await ready(visitor);
+  const soloCorner = [];
+  for (const [w, h] of SIZES) {
+    await visitor.page.setViewportSize({ width: w, height: h });
+    await sleep(400);
+    soloCorner.push(...(await cornerProblems(visitor, `${w}×${h}`, { ids: CONTROLS })));
+    if (h === 360 || w === 360) await visitor.page.screenshot({ path: join(tmpdir(), `bubbler-solo-${w}x${h}.png`) });
+  }
+  check("in solo play, p3p2's button sits in the bottom-left corner and covers no control, phone to PC", !soloCorner.length, soloCorner.join('; '));
+  // Its panel, opened from the button and closed again, leaves the keys to the game.
+  await visitor.page.setViewportSize({ width: 900, height: 900 });
+  await ready(visitor);
+  await visitor.page.getByRole('button', { name: 'Multiplayer' }).click();
+  await visitor.page.getByRole('button', { name: 'Close', exact: true }).click();
+  await visitor.page.keyboard.press('Escape');
+  const paused = await poll(() => visitor.page.locator('#pause').isVisible());
+  check("after p3p2's panel is opened from its button and closed, Esc still pauses the game", !!paused);
+  // Play with friends, on the title screen, opens the same panel. Outside a room it says where to get a server.
+  await visitor.page.reload();
+  await poll(() => title(visitor));
+  await visitor.page.locator('#btn-friends').click();
+  const help = visitor.page.getByRole('link', { name: 'p3p2.me' });
+  const helps = await help.waitFor().then(() => help.getAttribute('href'), () => null);
+  check("Play with friends, on the title screen, opens p3p2's panel, which links to p3p2.me outside a room", helps === 'https://p3p2.me/', helps);
 
-  // ---- The room closed by whoever hosts it ----
-  await evaluate(ada, () => window.__bubbler.race.room.end());
+  // ---- The room ended by its owner, on the room's page in the portal ----
+  await endRoom(server, room.page);
   const closedCard = await poll(async () => (await cy.page.locator('#room-closed').isVisible()) && cy.page.locator('#room-closed-why').textContent());
-  check('when the host ends the room, the others are told why', !!closedCard, closedCard);
+  check("when the room's owner ends the game, the players are told why", closedCard === "The room's owner ended the game.", closedCard);
   await cy.page.locator('#btn-room-back').click();
   const cySolo = await poll(() => evaluate(cy, () => !document.documentElement.classList.contains('racing') && !window.__bubbler.race && !window.__bubbler.app.watching));
   check('"Back to my game" leaves Cy in her own solo game', !!cySolo);
